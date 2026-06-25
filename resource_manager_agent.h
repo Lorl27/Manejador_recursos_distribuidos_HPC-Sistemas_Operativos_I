@@ -13,19 +13,24 @@
 #include <sys/epoll.h>
 #include <netinet/in.h>
 #include <linux/time.h>
+#include <fcntl.h>
+#include <asm-generic/socket.h>
+
 
 
 #define MAX_NODOS 50 // max que podemos llegar a conocer.
 #define MAX_MSG 1024
+#define MAX_EVENTS 64 //cant eventos epoll
+
 #define INTERVALO_SEG 3
 #define TIEMPO_CAIDO 15
-#define MAX_EVENTS 10 //cant eventos  epoll
-
-#define CAIDO(x) ((time(NULL)-(x)->timestamp)>TIEMPO_CAIDO)
-
 
 #define BROADCAST_IP "255.255.255.255"
+#define LOCAL_IP "127.0.0.1" 
+
 #define PUERTO_BROADCAST 8888
+
+#define CAIDO(x) ((time(NULL)-(x)->timestamp)>TIEMPO_CAIDO)
 
 //ANCHOR ESTRUCTURAS BASE DE DATOS:
 typedef struct _TablaNodos{
@@ -43,7 +48,7 @@ typedef struct _RecursosLocales{
     Cola solicitudesPendientes;
 }RecursosLocales;
 
-//ANCHOR - CREACION SOCKETS
+//ANCHOR - CREACION SERVIDORES
 
 //Crea un servidor en el puerto TCP pùblico (para otros nodos)
 // retorna fd del socket.
@@ -52,6 +57,8 @@ int crear_servidor_tcp_publico(int puerto);
 //Crea un servidor en el puerto TCP en localhost (para Elang)
 // retorna fd del socket.
 int crear_servidor_tcp_local(int puerto);
+
+//ANCHOR - CREACION SOCKETS
 
 // Crea socket UDP
 // recibe y envia ANNOUNCE.
@@ -64,14 +71,14 @@ int crear_conexion_cliente(const char * ip_destino, int puerto_destino);
 
 //ANCHOR -- eventos principales
 
-//Crea el epoll y el loop de mensajes perioòdicamente.
-//Manda periodicamente un mensaje con el formato ANNOUNCE <IP> <puerto> <recursos> por broadcast
-void iniciar_event_loop(void);
+//Crea el epoll y el loop de mensajes periodicos, con el formato ANNOUNCE <IP> <puerto> <recursos> por broadcast
+//Utiliza los datos de la computadora para la configuraciòn.
+void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico,int mi_puerto_local, char* mis_recursos);
 
 // Envia un anuncio y espera 2s para recibir anuncios de otros nodos ya activos.,,.-- 
 // EL socket UDP se agrega al conjunto de EPOLL - eventos EPOLLIN.
 // Luego, atiende peticiones normales.
-void ejecutar_arranque_inicial(int epoll_fd, int sock_udp_broadcast);
+void ejecutar_arranque_inicial(int epoll_fd, int sock_udp_broadcast,char * ip, int puerto_tcp, char * recursos);
 
 
 //ANCHOR - Validaciones y gestiones
