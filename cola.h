@@ -2,7 +2,6 @@
 #define __COLA_H__
 
 #include <stdlib.h>
-#include <netinet/in.h>
 
 typedef void (*FuncionDestructora)(void *dato);
 typedef void *(*FuncionCopia)(void *dato);
@@ -11,8 +10,6 @@ typedef int (*FuncionComparadora)(void *a, void *b);
 typedef struct _GNode{
     void * dato;
     struct _GNode * sig;
-    int job_id;
-    struct sockaddr_in origen;
 }GNode;
 
 typedef struct _Cola {

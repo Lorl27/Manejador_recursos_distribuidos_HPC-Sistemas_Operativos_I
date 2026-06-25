@@ -1,14 +1,31 @@
 #include "resource_manager_agent.h"
 
-//* ----- Variables globales para el manejo de mensajes y nodos. -----
+//* ----- Variables globales para el manejo de mensajes, recursos y nodos. -----
 char mensaje[MAX_MSG];
 struct sockaddr_in srv_mensajeria_broadcast;
 
 TablaNodos tabla_activos[MAX_NODOS];
 int cantidad_nodos=0;
 
+RecursosLocales mi_recurso_local[3]; //cpu - gpu - mem
+
 //*-------------------------------------------
 
+//*  -- FUNCIONES AUXILIARES COLA --
+
+void* copiar_solicitud(void* dato) {
+    SolicitudRecurso * original=(SolicitudRecurso*) dato;
+    SolicitudRecurso * copia=malloc(sizeof(SolicitudRecurso));
+    copia->job_id=original->job_id;
+    copia->amount=original->amount;
+    copia->fd_origen=original->fd_origen;
+
+    return copia;
+}
+
+void destruir_solicitud(void* dato) {
+    free(dato);
+}
 
 //* --- CREACION DE SERVIDORES ---
 
@@ -18,13 +35,13 @@ int crear_servidor_tcp_publico(int puerto){
     int opt = 1;
  
     if((sock_srv=socket(AF_INET, SOCK_STREAM,0))<0) {
-        perror("Fallo en creacion de socket TCP publico");
+        perror("[SERVER TCP PUBLICO-ERROR] Fallo la creacion del socket.\n");
         exit(EXIT_FAILURE);
     }
 
     //SO_REUSEADDR | SO_REUSEPORT nos permite reutilizar el puerto inmediatamente por si creashea/reinicia
     if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
-        perror("Fallo en setsockopt");
+        perror("[SERVER TCP PUBLICO-ERROR] Fallo el setsockopt.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -37,13 +54,13 @@ int crear_servidor_tcp_publico(int puerto){
     srv_name.sin_port = htons(puerto);
 
     if(bind(sock_srv, (struct sockaddr*)&srv_name, sizeof(srv_name)) < 0) {
-        perror("Fallo en bind TCP publico");
+        perror("[SERVER TCP PUBLICO-ERROR] Fallo el bind.\n");
         exit(EXIT_FAILURE);
     }
 
-    //para ecibir maximo que pueda
+    //para recibir maximo que pueda
     if(listen(sock_srv, SOMAXCONN) < 0) {
-        perror("Fallo en listen TCP publico");
+        perror("[SERVER TCP PUBLICO-ERROR] Fallo el listen.\n");
         exit(EXIT_FAILURE);
     }
     
@@ -58,13 +75,13 @@ int crear_servidor_tcp_local(int puerto){
     int opt = 1;
  
     if((sock_srv=socket(AF_INET, SOCK_STREAM,0))<0) {
-        perror("Fallo en creacion de socket TCP LOCAL");
+        perror("[SERVER TCP LOCAL-ERROR] Fallo en la creacion del socket.\n");
         exit(EXIT_FAILURE);
     }
 
     //SO_REUSEADDR | SO_REUSEPORT nos permite reutilizar el puerto inmediatamente por si creashea/reinicia
     if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
-        perror("Fallo en setsockopt");
+        perror("[SERVER TCP LOCAL-ERROR] Fallo el setsockopt.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -77,17 +94,17 @@ int crear_servidor_tcp_local(int puerto){
     srv_name.sin_port = htons(puerto);
 
     if(bind(sock_srv, (struct sockaddr*)&srv_name, sizeof(srv_name)) < 0) {
-        perror("Fallo en bind TCP LOCAL");
+        perror("[SERVER TCP LOCAL-ERROR] Fallo el bind.\n");
         exit(EXIT_FAILURE);
     }
 
     //para ecibir maximo que pueda
     if(listen(sock_srv, SOMAXCONN) < 0) {
-        perror("Fallo en listen TCP LOCAL");
+        perror("[SERVER TCP LOCAL-ERROR] Fallo el listen.\n");
         exit(EXIT_FAILURE);
     }
     
-    printf("[SERVER TCP LOCAL] Creacion realizada con exito. Escuchando en puerto: %d\n",puerto);
+    printf("[SERVER TCP LOCAL] Creacion realizada con exito. Escuchando en puerto con IP: %d %s\n",puerto,LOCAL_IP);
     
     return sock_srv;
 }
@@ -100,13 +117,13 @@ int crear_socket_broadcast() {
 
     //crear socket upd
     if((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        perror("Error creando socket UDP");
+        perror("[BROADCAST-ERROR] Creando el socket UDP.\n");
         exit(EXIT_FAILURE);
     }
 
     //hacerlo broadcast
     if(setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable)) < 0) {
-        perror("Error seteando broadcast");
+        perror("[BROADCAST-ERROR] Seteando el broadcast.\n");
         close(sock);
         exit(EXIT_FAILURE);
     }
@@ -125,10 +142,12 @@ int crear_socket_broadcast() {
     recvAddr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if(bind(sock, (struct sockaddr*)&recvAddr, sizeof(recvAddr)) < 0) {
-        perror("Error en bind del socket UDP");
+        perror("[BROADCAST-ERROR] Error en el bind.\n");
         close(sock);
         exit(EXIT_FAILURE);
     }
+
+    printf("[BROADCAST] Creacion realizada con exito. Escuchando en puerto con IP: %d %s\n",PUERTO_BROADCAST,BROADCAST_IP);
 
     return sock;
 }
@@ -170,16 +189,16 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
     socklen_t len = sizeof(origen);
     struct epoll_event events[MAX_EVENTS];
 
-    printf("[ARRANQUE] Enviando primer anuncio...\n");
+    printf("[INFO-ARRANQUE] Enviando primer anuncio...\n");
     
     // anuncio mi IP - Puerto TCP- Mis recursos disponibles
     snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s", ip, puerto_tcp, recursos);
    
     if (sendto(socket_broadcast, mensaje, strlen(mensaje), 0, (struct sockaddr*)&srv_mensajeria_broadcast, sizeof(srv_mensajeria_broadcast)) < 0) {
-        perror("Error en sendto inicial");
+        perror("[ARRANQUE-ERROR] Error en sendto inicial.\n");
     }
 
-    printf("[ARRANQUE] Esperando 2 segundos para descubrir nodos...\n");
+    printf("[INFO-ARRANQUE] Esperando 2 segundos para descubrir nodos...\n");
 
     int n = epoll_wait(epoll_fd, events, MAX_EVENTS, 2000); 
 
@@ -188,7 +207,7 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
             int nbytes = recvfrom(socket_broadcast, buffer, MAX_MSG -1, 0, (struct sockaddr*)&origen, &len);
             if (nbytes > 0) {
                 buffer[nbytes] = '\0';
-                printf("[ARRANQUE] Nodo activo descubierto: %s\n", buffer);
+                printf("[INFO-ARRANQUE] Nodo activo descubierto: %s\n", buffer);
                 
                 insertar_en_tablaNodos(buffer);
                 
@@ -196,7 +215,7 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
         }
     }
 
-    printf("[ARRANQUE] Fase inicial completada.\n"); 
+    printf("[INFO-ARRANQUE] Fase inicial completada.\n"); 
 }
 
 void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_local, char* mis_recursos){
@@ -214,7 +233,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     //tfd_nonblock: operaciones no bloqueantes
     int timer = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     if (timer == -1) {
-        perror("Falló timerfd_create");
+        perror("[ERROR] Fallo timerfd_create.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -228,7 +247,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     //crear epoll
     int epoll_fd = epoll_create1(0);
     if (epoll_fd == -1) {
-        perror("Falló epoll_create1");
+        perror("[ERROR] Fallo epoll_create1.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -238,7 +257,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     ev.events = EPOLLIN;
     ev.data.fd = socket_broadcast; 
     if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, socket_broadcast, &ev)==-1){
-        perror("fallo epoll_ctl ADD socket broadcast");
+        perror("[ERROR] Fallo epoll_ctl ADD socket broadcast.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -246,7 +265,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     ev.events = EPOLLIN;
     ev.data.fd = timer; 
     if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timer, &ev)==-1){
-            perror("fallo epoll_ctl ADD timer");
+            perror("[ERROR] fallo epoll_ctl ADD timer.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -254,7 +273,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     ev.events = EPOLLIN;
     ev.data.fd = srv_public; 
     if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, srv_public, &ev)==-1){
-        perror("fallo epoll_ctl ADD srv public");
+        perror("[ERROR] fallo epoll_ctl ADD srv public.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -262,7 +281,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     ev.events = EPOLLIN;
     ev.data.fd = srv_local; 
     if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, srv_local, &ev)==-1){
-        perror("fallo epoll_ctl ADD srv local");
+        perror("[ERROR] fallo epoll_ctl ADD srv local.\n");
         exit(EXIT_FAILURE);
     }
     
@@ -270,12 +289,12 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     ejecutar_arranque_inicial(epoll_fd, socket_broadcast, mi_ip_lan, mi_puerto_publico, mis_recursos);
 
     printf("[Servidor iniciado correctamente.]\n");
-    printf("Iniciando envíos periódicos de ANNOUNCE por broadcast...\n");
+    printf("[INFO-SERVIDOR] Iniciando envíos periódicos de ANNOUNCE por broadcast...\n");
 
     while (1) {
         int n = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
         if (n < 0) {
-            perror("fallo epoll_wait");
+            perror("[SERVIDOR-ERROR] fallo epoll_wait.\n");
             exit(EXIT_FAILURE);
         }
 
@@ -287,7 +306,6 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
 
                 // Armar y mandar el mensaje ANNOUNCE 
                 snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s\n", mi_ip_lan, mi_puerto_publico, mis_recursos);
-
                 sendto(socket_broadcast, mensaje, strlen(mensaje), 0, (struct sockaddr*)&srv_mensajeria_broadcast, sizeof(srv_mensajeria_broadcast));
                 
                 limpiar_nodos_caidos();
@@ -298,16 +316,16 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
 
             }
             else if (fd == srv_local || fd==srv_public) {
-                //? alguien nuevo se quiere conectar...:
+                // Alguien nuevo se quiere conectar...:
                 
                 cli_size = sizeof(cli_name);
                 int nuevo_cli = accept(fd, (struct sockaddr *) &cli_name, &cli_size);
                 if (nuevo_cli < 0) {
-                    perror("falló accept cliente nuevo");
+                    perror("[SERVIDOR-ERROR] fallo accept cliente nuevo.\n");
                     continue; //no bloqueante si falla.
                 }
 
-                printf("[INFO] Nuevo cliente %d conectado en socket: %s.\n", nuevo_cli, (fd==srv_local)?"LOCAL":"PUBLICO");
+                printf("[INFO-SERVIDOR] Nuevo cliente %d conectado en socket: %s.\n", nuevo_cli, (fd==srv_local)?"LOCAL":"PUBLICO");
 
                 // Registrar cliente en epoll
                 ev.events = EPOLLIN;
@@ -315,25 +333,127 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                 epoll_ctl(epoll_fd, EPOLL_CTL_ADD, nuevo_cli, &ev);
             }
             else {
-                //? Cliente ya conectado mandó algo
+                // Cliente ya conectado mandó algo
                 nbytes = recv(fd, mensaje, MAX_MSG, 0);
                 if (nbytes <= 0) {
-                    printf("[INFO] Cliente  %d desconectado.\n", fd);
+                    printf("[INFO-SERVIDOR] Cliente  %d desconectado.\n", fd);
                     close(fd);
                     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
                 } 
                 else{
                     mensaje[nbytes] = '\0';
-                    printf("[FD %d] Mensaje recibido: %s", fd, mensaje);
 
-                    // TODO: Acá iría el router de comandos (RESERVE, RELEASE, etc.)
-                    //^ Echo de vuelta (DEBUG)
-                    send(fd, mensaje, nbytes, 0);
+                    if(!validar_mensajes_validos(mensaje)) continue;
+                    
+                    printf("[INFO-SERVIDOR] Mensaje recibido: %s del cliente %d", mensaje,fd);
+
+                    char comando[16];
+                    int job_id=0;
+                    char recursos_name[16] = "";
+                    int recursos_tam=0;
+
+                    int recibidos = sscanf(mensaje,"%15s %d %15s %d",comando,&job_id,recursos_name,&recursos_tam);
+
+                    RecursosLocales * recurso=NULL;
+
+                    int encontrado=0;
+                    for(int x=0;x<3 && !encontrado;x++){
+                        if(strcmp(recursos_name,mi_recurso_local[x].nombre)==0){
+                            recurso=&mi_recurso_local[x];
+                            encontrado=1;
+                        }
+                    }
+
+                    if(recurso!=NULL) gestionar_recursos_locales(recurso,comando,job_id,recursos_tam,fd);
+                    else {
+                        printf("[INFO-SERVIDOR-WARNING] Otro nodo pidio el recurso %s, el cual no tenemos.\n",recursos_name);
+
+                        //le avisamos al nodo por su misma conexion
+                        snprintf(mensaje, sizeof(mensaje), "DENIED %d \n", job_id);
+                        send(fd, mensaje, strlen(mensaje), 0);
+                    }
+        
                 }
             }
         }
     }
 }
+
+
+//* --- Validaciones y gestiones ----
+
+int validar_mensajes_validos(char * mensaje){
+    char comando[16];
+    int job_id;
+    char recursos_name[16] = "";
+    int recursos_tam;
+
+    int recibidos = sscanf(mensaje,"%15s %d %15s %d",comando,&job_id,recursos_name,&recursos_tam);
+
+    if(recibidos>=2){
+        if(strcmp(comando,"GRANTED")==0 || strcmp(comando,"DENIED")==0) return 1; 
+        
+        if(strcmp(comando,"RESERVE")==0 ||strcmp(comando,"RELEASE")==0  ){
+            if(recibidos!=4){
+                printf("[INFO-WARNING] Mensaje recibido (%s) no valido. Faltan parametros.\n",mensaje);
+                return 0;
+            }
+            else return 1;
+        }
+    }
+    
+    printf("[INFO-WARNING] Mensaje recibido (%s) no valido.\n",mensaje);
+    return 0;
+    
+}
+
+void gestionar_recursos_locales(RecursosLocales * recurso, char * comando, int job_id, int amount, int fd_cliente){
+    char respuesta[MAX_MSG];
+
+    if(strcmp(comando,"RESERVE")==0){
+        if(recurso->cantidadDisponible>=amount && amount<=recurso->capacidadTotal){
+            recurso->cantidadDisponible-=amount;
+
+            //Armamos y mandamos la respuesta TCP al agente que la pidió
+            snprintf(respuesta, sizeof(respuesta), "GRANTED %d\n", job_id);
+            send(fd_cliente, respuesta, strlen(respuesta), 0);
+            
+            printf("[INFO-COLA] GRANTED enviado para job %d , con recurso y cantidad: %s - %d.\n", job_id, recurso->nombre,amount);
+        }
+        else{ //no hay stock:
+            SolicitudRecurso soli;
+            soli.job_id = job_id;
+            soli.amount = amount;
+            soli.fd_origen = fd_cliente;
+
+            recurso->solicitudesPendientes=Encolar(recurso->solicitudesPendientes,&soli,copiar_solicitud);
+
+            printf("[INFO-COLA] Sin stock de %s. Solicitud %d agregada a la cola.\n", recurso->nombre, job_id);
+        }
+    }
+    else if(strcmp(comando,"RELEASE")==0){
+        recurso->cantidadDisponible+=amount;
+        printf("[INFO-COLA] Liberados %d de %s. Disponible actual: %d\n", amount, recurso->nombre, recurso->cantidadDisponible);
+        
+        int exigencia_mayor=0;
+        while(!isEmpty(recurso->solicitudesPendientes) && !exigencia_mayor){
+            SolicitudRecurso * primero = (SolicitudRecurso *) Tope(recurso->solicitudesPendientes);
+
+            //si tenemos suficiente disponible para el job...:
+            if(recurso->cantidadDisponible>=primero->amount){
+                recurso->cantidadDisponible-=primero->amount;
+
+                snprintf(respuesta, sizeof(respuesta), "GRANTED %d\n", primero->job_id);
+                send(primero->fd_origen, respuesta, strlen(respuesta), 0);
+                
+                printf("[INFO-COLA] GRANTED enviado. Job: %d | Recurso: %s\n", primero->job_id, recurso->nombre);
+
+                recurso->solicitudesPendientes=Desencolar(recurso->solicitudesPendientes,destruir_solicitud);
+            }else exigencia_mayor=1;
+        }
+    }
+}
+
 
 
 //* --- MANEJO TABLA NODOS ----

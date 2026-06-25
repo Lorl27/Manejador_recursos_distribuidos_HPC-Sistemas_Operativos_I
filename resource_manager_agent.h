@@ -40,6 +40,11 @@ typedef struct _TablaNodos{
     time_t timestamp;
 } TablaNodos;
 
+typedef struct _SolicitudRecurso {
+    int job_id;
+    int amount;
+    int fd_origen; // El socket al que le tenemos que mandar el GRANTED
+} SolicitudRecurso;
 
 typedef struct _RecursosLocales{
     char nombre[16];
@@ -47,6 +52,14 @@ typedef struct _RecursosLocales{
     int cantidadDisponible;
     Cola solicitudesPendientes;
 }RecursosLocales;
+
+//ANCHOR - Funciones axuiliares cola
+
+//copia la solicitud de recurso.
+void* copiar_solicitud(void* dato);
+
+//libera la memoria de la solicitud de recurso, destruyendola.
+void destruir_solicitud(void* dato);
 
 //ANCHOR - CREACION SERVIDORES
 
@@ -71,14 +84,15 @@ int crear_conexion_cliente(const char * ip_destino, int puerto_destino);
 
 //ANCHOR -- eventos principales
 
-//Crea el epoll y el loop de mensajes periodicos, con el formato ANNOUNCE <IP> <puerto> <recursos> por broadcast
-//Utiliza los datos de la computadora para la configuraciòn.
-void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico,int mi_puerto_local, char* mis_recursos);
-
-// Envia un anuncio y espera 2s para recibir anuncios de otros nodos ya activos.,,.-- 
-// EL socket UDP se agrega al conjunto de EPOLL - eventos EPOLLIN.
-// Luego, atiende peticiones normales.
+// Envia un anuncio y espera 2s para recibir anuncios de otros nodos ya activos.
 void ejecutar_arranque_inicial(int epoll_fd, int sock_udp_broadcast,char * ip, int puerto_tcp, char * recursos);
+
+/*
+Crea sockets TCP public y local ademàs UPD Broadcats, utilizando datos de la computadora para la configuraciòn.
+anuncia mensajes periodicos, con el formato ANNOUNCE <IP> <puerto> <recursos> por broadcast
+Crea y registra eventos en epoll para luego atenderlos.
+*/
+void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico,int mi_puerto_local, char* mis_recursos);
 
 
 //ANCHOR - Validaciones y gestiones
@@ -98,7 +112,7 @@ Si recibe RESERVE :
 Si recibe RELEASE:
     - se libera la cantidad, se descuenta del job y se atienden las encoladas por orden.
 */
-void gestionar_recursos_locales(RecursosLocales * recursos, char * comando, int job_id, int amount);
+void gestionar_recursos_locales(RecursosLocales * recursos, char * comando, int job_id, int amount,int fd_cliente);
 
 //ANCHOR - Manejo de la Tabla de Nodos
 
@@ -109,7 +123,5 @@ void limpiar_nodos_caidos();
 //Inserta el nodo en la tablaNodos (si es que no existia)
 // SI existia antes, actualizamos timestamp.
 void insertar_en_tablaNodos(char * buffer);
-
-
 
 #endif
