@@ -12,6 +12,8 @@
 #include <time.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
+#include <linux/time.h>
+
 
 #define MAX_NODOS 50 // max que podemos llegar a conocer.
 #define MAX_MSG 1024
@@ -91,9 +93,16 @@ Si recibe RELEASE:
 */
 void gestionar_recursos_locales(RecursosLocales * recursos, char * comando, int job_id, int amount);
 
-//ANCHOR - Otros
+//ANCHOR - Manejo de la Tabla de Nodos
+
+// Si encontramos un nodo cuyo tiempo supero los 15s, se elimina de la tabla.
+// Se reemplaza con el ùltimo nodo disponible, y se vuelve a verificar que no se encuentre caìdo.
+void limpiar_nodos_caidos();
 
 //Inserta el nodo en la tablaNodos (si es que no existia)
 // SI existia antes, actualizamos timestamp.
 void insertar_en_tablaNodos(char * buffer);
+
+
+
 #endif
