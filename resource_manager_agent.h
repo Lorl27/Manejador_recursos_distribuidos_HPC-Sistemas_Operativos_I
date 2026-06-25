@@ -13,7 +13,7 @@
 #include <sys/epoll.h>
 #include <netinet/in.h>
 
-
+#define MAX_NODOS 50 // max que podemos llegar a conocer.
 #define MAX_MSG 1024
 #define INTERVALO_SEG 3
 #define TIEMPO_CAIDO 15
@@ -23,19 +23,7 @@
 
 
 #define BROADCAST_IP "255.255.255.255"
-
-//ANCHOR ESTRUCTURAS BASE:
-typedef struct _GNode{
-    void * dato;
-    struct _GNode * sig;
-    int job_id;
-    struct sockaddr_in origen;
-}GNode;
-
-typedef struct _Cola{
-    GNode * inicio;
-    GNode * fin;
-} * Cola;
+#define PUERTO_BROADCAST 8888
 
 //ANCHOR ESTRUCTURAS BASE DE DATOS:
 typedef struct _TablaNodos{
@@ -43,7 +31,7 @@ typedef struct _TablaNodos{
     int puerto;
     char recursos[128];
     time_t timestamp;
-}TablaNodos;
+} TablaNodos;
 
 
 typedef struct _RecursosLocales{
@@ -103,5 +91,9 @@ Si recibe RELEASE:
 */
 void gestionar_recursos_locales(RecursosLocales * recursos, char * comando, int job_id, int amount);
 
+//ANCHOR - Otros
 
+//Inserta el nodo en la tablaNodos (si es que no existia)
+// SI existia antes, actualizamos timestamp.
+void insertar_en_tablaNodos(char * buffer);
 #endif

@@ -1,9 +1,14 @@
 #include "resource_manager_agent.h"
 
 
-//var globales para el manejo de mensajes.
+//* ----- Variables globales para el manejo de mensajes y nodos. -----
 char mensaje[MAX_MSG];
-struct sockaddr_in broadcastAddr;
+struct sockaddr_in srv_mensajeria_broadcast;
+
+TablaNodos tabla_activos[MAX_NODOS];
+int cantidad_nodos=0;
+
+//*-------------------------------------------
 
 int crear_socket_broadcast() {
     int sock;
@@ -23,10 +28,10 @@ int crear_socket_broadcast() {
     }
 
     // configura la dirección de destino para los envíos
-    memset(&broadcastAddr, 0, sizeof(broadcastAddr));
-    broadcastAddr.sin_family = AF_INET;
-    broadcastAddr.sin_port = htons(PUERTO_BROADCAST);
-    broadcastAddr.sin_addr.s_addr = inet_addr(BROADCAST_IP); 
+    memset(&srv_mensajeria_broadcast, 0, sizeof(srv_mensajeria_broadcast));
+    srv_mensajeria_broadcast.sin_family = AF_INET;
+    srv_mensajeria_broadcast.sin_port = htons(PUERTO_BROADCAST);
+    srv_mensajeria_broadcast.sin_addr.s_addr = inet_addr(BROADCAST_IP); 
 
     // Bind  - permite escuchar msg que llegan al puerto
     struct sockaddr_in recvAddr;
@@ -44,7 +49,7 @@ int crear_socket_broadcast() {
     return sock;
 }
 
-void ejecutar_arranque_inicial(int epoll_fd, int sock_udp_broadcast) {
+void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int puerto_tcp, char * recursos) {
     char buffer[MAX_MSG];
     struct sockaddr_in origen;
     socklen_t len = sizeof(origen);
@@ -52,37 +57,37 @@ void ejecutar_arranque_inicial(int epoll_fd, int sock_udp_broadcast) {
 
     printf("[ARRANQUE] Enviando primer anuncio...\n");
     
-    // Envíar anuncio inmediatamente 
-    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s", "127.0.0.1", 8888, "cpu:4");
-   if (sendto(sock_udp_broadcast, mensaje, strlen(mensaje), 0, 
-           (struct sockaddr*)&broadcastAddr, sizeof(broadcastAddr)) < 0) {
+// anuncio mi IP - Puerto TCP- Mis recursos disponibles
+    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s", ip, puerto_tcp, recursos;
+   
+    if (sendto(socket_broadcast, mensaje, strlen(mensaje), 0, (struct sockaddr*)&srv_mensajeria_broadcast, sizeof(srv_mensajeria_broadcast)) < 0) {
         perror("Error en sendto inicial");
     }
 
     printf("[ARRANQUE] Esperando 2 segundos para descubrir nodos...\n");
 
-    //2s de espera.
     int n = epoll_wait(epoll_fd, events, MAX_EVENTS, 2000); 
 
     for (int i = 0; i < n; i++) {
-        if (events[i].data.fd == sock_udp_broadcast) {
-            int nbytes = recvfrom(sock_udp_broadcast, buffer, MAX_MSG, 0, 
-                                 (struct sockaddr*)&origen, &len);
+        if (events[i].data.fd == socket_broadcast) {
+            int nbytes = recvfrom(socket_broadcast, buffer, MAX_MSG -1, 0, (struct sockaddr*)&origen, &len);
             if (nbytes > 0) {
                 buffer[nbytes] = '\0';
                 printf("[ARRANQUE] Nodo activo descubierto: %s\n", buffer);
-                //TODO pasear buffer y guardar nodo en TablaNodos
+                
+                insertar_en_tablaNodos(buffer);
+                
             }
         }
     }
 
-    printf("[ARRANQUE] Fase inicial completada. Pasando a peticiones normales.\n"); // 
+    printf("[ARRANQUE] Fase inicial completada.\n"); 
 }
 
 void iniciar_event_loop() {
     int socket_broadcast=crear_socket_broadcast();
     //crear_servidor_tcp_publico();
-    //creaR_servidor_tcp_local();
+    //crear_servidor_tcp_local();
 
     //conf. de timerd para los anuncios:
     int timer = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
@@ -146,7 +151,7 @@ void iniciar_event_loop() {
                 // Armar y mandar el mensaje ANNOUNCE 
                 snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s\n", "127.0.0.1", 8888, "cpu:4");
                 sendto(socket_broadcast, mensaje, strlen(mensaje), 0, 
-                       (struct sockaddr*)&broadcastAddr, sizeof(broadcastAddr));
+                       (struct sockaddr*)&srv_mensajeria_broadcast, sizeof(srv_mensajeria_broadcast));
             }
            else if (fd == socket_broadcast) {
                 //TODO - llego algo de oto nodo- recvfrom
@@ -156,6 +161,47 @@ void iniciar_event_loop() {
                 //TODO - accept conexiones tcp
                 //TODO - mensajes cleintes ya conectados - recv send
             }
+        }
+    }
+}
+
+
+void insertar_en_tablaNodos(char * buffer){
+    char comando[16];
+    char ip_recibida[16];
+    int puerto_recibido;
+    char recursos_recibidos[128] = "";
+
+    //lee hasta el primer espacio (comando - puerto - ip - lee el resto :recursos)
+    int recibidos = sscanf(buffer,"%15s %15s %d %127[^\n]",comando,ip_recibida,&puerto_recibido,recursos_recibidos);
+
+    //Verificacion ANUNCIAMIENTO vàlida.
+    if(recibidos>=3 && strcmp(comando,"ANNOUNCE")==0){
+
+        int existe=0;
+
+        //nos fijamos si ya existe primero...
+        // si existe actualizamos el timestmap, sino: lo insertamos.
+        for(int x=0;x<cantidad_nodos && !existe;x++){
+            if(strcmp(tabla_activos[x].IP,ip_recibida)==0 && tabla_activos[x].puerto==puerto_recibido){
+                tabla_activos[x].timestamp=time(NULL); //hora actual
+                existe=1;
+                printf("[INFO] Nodo %s:%d actualizado.\n", ip_recibida,puerto_recibido);
+        }
+
+        if(!existe){
+            if(cantidad_nodos<MAX_NODOS){
+                strncpy(tabla_activos[cantidad_nodos].IP,ip_recibida,15);
+                tabla_activos[cantidad_nodos].IP[15]='\0';
+
+                tabla_activos[cantidad_nodos].puerto=puerto_recibido;
+
+                strncpy(tabla_activos[cantidad_nodos].recursos,recursos_recibidos,127);
+                tabla_activos[cantidad_nodos].recursos[127]='\0';
+
+                cantidad_nodos++;
+                printf("[INFO] Nodo agregado a la tabla: %s:%d\n", ip_recibida, puerto_recibido);                
+            }else printf("[INFO-WARNING] Tabla de nodos llena. No se pudo agregar: %s:%d.\n",ip_recibida,puerto_recibido);
         }
     }
 }
