@@ -53,6 +53,12 @@ typedef struct _RecursosLocales{
     Cola solicitudesPendientes;
 }RecursosLocales;
 
+//ANCHOR -- Inicializaciòn
+
+//Inicializa los recursos pasados (formato: "cpu:4 mem:8192 gpu:1") en el main.c ,
+// para poder utilizarlos.
+void inicializar_mis_recursos(char * mis_recursos);
+
 //ANCHOR - Funciones axuiliares cola
 
 //copia la solicitud de recurso.
@@ -82,7 +88,7 @@ int crear_socket_broadcast(void);
 // retorna fd del socket.
 int crear_conexion_cliente(const char * ip_destino, int puerto_destino);
 
-//ANCHOR -- eventos principales
+//ANCHOR -- Eventos principales
 
 // Envia un anuncio y espera 2s para recibir anuncios de otros nodos ya activos.
 void ejecutar_arranque_inicial(int epoll_fd, int sock_udp_broadcast,char * ip, int puerto_tcp, char * recursos);

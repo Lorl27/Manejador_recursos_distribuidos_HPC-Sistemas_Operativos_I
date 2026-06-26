@@ -11,6 +11,46 @@ RecursosLocales mi_recurso_local[3]; //cpu - gpu - mem
 
 //*-------------------------------------------
 
+//* --- INICIALIZACIÒN ---
+
+void inicializar_mis_recursos(char * mis_recursos) {
+    char copia[256];
+    strncpy(copia, mis_recursos, 255);
+    copia[255] = '\0';
+
+    int x=0;
+    // Cortamos por espacios
+    char * token = strtok(copia, " ");
+    
+    while(token!=NULL && x<3){
+        char nombre[16];
+        int capacidad;
+        
+        // El %15[^:] lee todo hasta encontrar los dos puntos ':'
+        if(sscanf(token,"%15[^:]:%d",nombre,&capacidad)== 2){
+            strncpy(mi_recurso_local[x].nombre, nombre, 15);
+            mi_recurso_local[x].nombre[15] = '\0';
+            mi_recurso_local[x].capacidadTotal = capacidad;
+            mi_recurso_local[x].cantidadDisponible = capacidad;
+            mi_recurso_local[x].solicitudesPendientes = Cola_crear();
+            
+            printf("[INFO-INIT] Recurso cargado: %s con capacidad %d\n", mi_recurso_local[x].nombre, capacidad);
+            x++;
+        }
+        token = strtok(NULL, " "); // Siguiente recurso
+    }
+    
+    // Si alguno de los recursos no se paso, lo inicializamos por defecto en vacio. 
+    //usa el valor de x anterior.
+    for(;x<3;x++) {
+        strcpy(mi_recurso_local[x].nombre, "");
+        mi_recurso_local[x].capacidadTotal = 0;
+        mi_recurso_local[x].cantidadDisponible = 0;
+        mi_recurso_local[x].solicitudesPendientes = Cola_crear(); 
+    }
+}
+
+
 //*  -- FUNCIONES AUXILIARES COLA --
 
 void* copiar_solicitud(void* dato) {
@@ -189,6 +229,8 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
     socklen_t len = sizeof(origen);
     struct epoll_event events[MAX_EVENTS];
 
+    inicializar_mis_recursos(recursos);
+
     printf("[INFO-ARRANQUE] Enviando primer anuncio...\n");
     
     // anuncio mi IP - Puerto TCP- Mis recursos disponibles
@@ -204,7 +246,7 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
 
     for (int i = 0; i < n; i++) {
         if (events[i].data.fd == socket_broadcast) {
-            int nbytes = recvfrom(socket_broadcast, buffer, MAX_MSG -1, 0, (struct sockaddr*)&origen, &len);
+            int nbytes = recvfrom(socket_broadcast, buffer, MAX_MSG-1, 0, (struct sockaddr*)&origen, &len);
             if (nbytes > 0) {
                 buffer[nbytes] = '\0';
                 printf("[INFO-ARRANQUE] Nodo activo descubierto: %s\n", buffer);
@@ -225,7 +267,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
 
     int socket_broadcast=crear_socket_broadcast();
     struct sockaddr_in  cli_name;
-    socklen_t cli_size;
+    socklen_t cli_size=sizeof(cli_name);;
     ssize_t nbytes;
 
     //conf. de timerd para los anuncios:
@@ -310,15 +352,22 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                 
                 limpiar_nodos_caidos();
             }
-            else if (fd == socket_broadcast) {
-                //TODO - llego algo de oto nodo- recvfrom
-                
+            else if(fd==socket_broadcast){ //llego algo de otro nodo.
 
+                nbytes = recvfrom(socket_broadcast, mensaje, MAX_MSG-1, 0, (struct sockaddr *) &cli_name, &cli_size);  //donde recibo info.
+                if(nbytes < 0) {
+                    perror("[OTRO NODO - ERROR] Falló el recvfrom en broadcast.\n");
+                    continue; //no bloqueante si falla.
+                }
+
+                mensaje[nbytes]='\0';
+                printf("[OTRO NODO - INFO] Se recibio del nodo con IP %s el mensaje: %s.\n", inet_ntoa(((struct sockaddr_in*)&cli_name)->sin_addr),mensaje);
+
+                insertar_en_tablaNodos(mensaje);
             }
-            else if (fd == srv_local || fd==srv_public) {
+            else if (fd==srv_local || fd==srv_public) {
                 // Alguien nuevo se quiere conectar...:
                 
-                cli_size = sizeof(cli_name);
                 int nuevo_cli = accept(fd, (struct sockaddr *) &cli_name, &cli_size);
                 if (nuevo_cli < 0) {
                     perror("[SERVIDOR-ERROR] fallo accept cliente nuevo.\n");
@@ -334,8 +383,8 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
             }
             else {
                 // Cliente ya conectado mandó algo
-                nbytes = recv(fd, mensaje, MAX_MSG, 0);
-                if (nbytes <= 0) {
+                nbytes = recv(fd, mensaje, MAX_MSG-1, 0);
+                if(nbytes <= 0) {
                     printf("[INFO-SERVIDOR] Cliente  %d desconectado.\n", fd);
                     close(fd);
                     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
