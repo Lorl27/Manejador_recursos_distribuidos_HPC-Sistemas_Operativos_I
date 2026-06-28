@@ -401,27 +401,34 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                     char recursos_name[16] = "";
                     int recursos_tam=0;
 
-                    int recibidos = sscanf(mensaje,"%15s %d %15s %d",comando,&job_id,recursos_name,&recursos_tam);
+                    sscanf(mensaje,"%15s %d %15s %d",comando,&job_id,recursos_name,&recursos_tam);
 
-                    RecursosLocales * recurso=NULL;
+                    //Respuestas a nuestras reservas:
+                    if(strcmp(comando,"GRANTED")==0||strcmp(comando,"DENIED")==0){
+                        //TODO - AVISAR a erlang
+                        printf("[INFO-SERVIDOR] Se recibio: %s para el jod %d. \n",comando,job_id);
+                    } //si alguien nos pidio ò libero recursos a nosotros:
+                    else if(strcmp(comando,"RESERVE")==0||strcmp(comando,"RELEASE")==0){
+                        RecursosLocales * recurso=NULL;
 
-                    int encontrado=0;
-                    for(int x=0;x<3 && !encontrado;x++){
-                        if(strcmp(recursos_name,mi_recurso_local[x].nombre)==0){
-                            recurso=&mi_recurso_local[x];
-                            encontrado=1;
+                        int encontrado=0;
+                        for(int x=0;x<3 && !encontrado;x++){
+                            if(strcmp(recursos_name,mi_recurso_local[x].nombre)==0){
+                                recurso=&mi_recurso_local[x];
+                                encontrado=1;
+                            }
+                        }
+
+                        if(recurso!=NULL) gestionar_recursos_locales(recurso,comando,job_id,recursos_tam,fd);
+                        else {
+                            printf("[INFO-SERVIDOR-WARNING] Otro nodo pidio el recurso %s, el cual no tenemos.\n",recursos_name);
+
+                            //le avisamos al nodo por su misma conexion
+                            snprintf(mensaje, sizeof(mensaje), "DENIED %d \n", job_id);
+                            send(fd, mensaje, strlen(mensaje), 0);
                         }
                     }
-
-                    if(recurso!=NULL) gestionar_recursos_locales(recurso,comando,job_id,recursos_tam,fd);
-                    else {
-                        printf("[INFO-SERVIDOR-WARNING] Otro nodo pidio el recurso %s, el cual no tenemos.\n",recursos_name);
-
-                        //le avisamos al nodo por su misma conexion
-                        snprintf(mensaje, sizeof(mensaje), "DENIED %d \n", job_id);
-                        send(fd, mensaje, strlen(mensaje), 0);
-                    }
-        
+                    
                 }
             }
         }
