@@ -269,7 +269,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
 
     int socket_broadcast=crear_socket_broadcast();
     struct sockaddr_in  cli_name;
-    socklen_t cli_size=sizeof(cli_name);
+    socklen_t cli_size;
     ssize_t nbytes;
 
     //conf. de timerd para los anuncios:
@@ -355,7 +355,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                 limpiar_nodos_caidos();
             }
             else if(fd==socket_broadcast){ //llego algo de otro nodo.
-
+                cli_size=sizeof(cli_name);
                 nbytes = recvfrom(socket_broadcast, mensaje, MAX_MSG-1, 0, (struct sockaddr *) &cli_name, &cli_size);  //donde recibo info.
                 if(nbytes < 0) {
                     perror("[OTRO NODO - ERROR] Falló el recvfrom en broadcast.\n");
@@ -369,7 +369,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
             }
             else if (fd==srv_local || fd==srv_public) {
                 // Alguien nuevo se quiere conectar...:
-                
+                cli_size=sizeof(cli_name);
                 int nuevo_cli = accept(fd, (struct sockaddr *) &cli_name, &cli_size);
                 if (nuevo_cli < 0) {
                     perror("[SERVIDOR-ERROR] fallo accept cliente nuevo.\n");
@@ -442,15 +442,15 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                             send(fd, mensaje, strlen(mensaje), 0);
                         }
                     } 
-                    //si erlang nos pidio buscar un recurso: (MODO:CONEXION)
-                    else if(strcmp(comando,"LOCAL_RESQUEST")==0){
+                    //si erlang nos pidio buscar un recurso: (MODO:INTERMEDIARIO)
+                    else if(strcmp(comando,"LOCAL_REQUEST")==0){
                         //el fd es el del socket de erlang LOCAL
                         int fd_remoto = pedir_recurso_tablaNodos(job_id,recursos_name,recursos_tam);
                         
                         if(fd_remoto!=-1){
                             guardar_datos_solicitud_respuesta(fd_remoto,fd,job_id);
 
-                            //lo agregamos al epoll, para que nos avise cuadno repondan GRANTED
+                            //lo agregamos al epoll, para que nos avise(escuchar) cuando respondan GRANTED
                             struct epoll_event ev_remoto;
                             ev_remoto.events=EPOLLIN;
                             ev_remoto.data.fd=fd_remoto;
@@ -593,6 +593,8 @@ void insertar_en_tablaNodos(char * buffer){
                 strncpy(tabla_activos[cantidad_nodos].recursos,recursos_recibidos,127);
                 tabla_activos[cantidad_nodos].recursos[127]='\0';
 
+                tabla_activos[cantidad_nodos].timestamp=time(NULL);
+
                 cantidad_nodos++;
                 printf("[INFO] Nodo agregado a la tabla: %s:%d\n", ip_recibida, puerto_recibido);                
             }else printf("[INFO-WARNING] Tabla de nodos llena. No se pudo agregar: %s:%d.\n",ip_recibida,puerto_recibido);
@@ -634,7 +636,7 @@ void guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id){
             solicitud_respuesta[x].fd_erlang=fd_erlang;
             solicitud_respuesta[x].fd_remoto=fd_remoto;
             solicitud_respuesta[x].job_id=job_id;
-            printf("[SOLICITUD RESPUESTA] Se registro la relacion fd_remoto %d => fd_erlang %d con job_id %d.\n",fd_erlang,fd_remoto,job_id);
+            printf("[SOLICITUD RESPUESTA] Se registro la relacion fd_remoto %d => fd_erlang %d con job_id %d.\n",fd_remoto,fd_erlang,job_id);
             return;
         }
     }
