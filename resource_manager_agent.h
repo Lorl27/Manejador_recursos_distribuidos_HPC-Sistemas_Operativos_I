@@ -18,9 +18,10 @@
 
 
 
-#define MAX_NODOS 50 // max que podemos llegar a conocer.
+#define MAX_NODOS 50 // maximo de nodos que podemos llegar a conocer (simultaneas)
 #define MAX_MSG 1024
-#define MAX_EVENTS 64 //cant eventos epoll
+#define MAX_EVENTS 64 //cant eventos epoll (simultaneos)
+#define MAX_PENDING 100 // maximo de peticiones hacia otros nodos (simultaneas)
 
 #define INTERVALO_SEG 3
 #define TIEMPO_CAIDO 15
@@ -40,11 +41,20 @@ typedef struct _TablaNodos{
     time_t timestamp;
 } TablaNodos;
 
+//Uso: Para gestionar nuestros recursos, cuando nos lo piden.
 typedef struct _SolicitudRecurso {
     int job_id;
     int amount;
     int fd_origen; // El socket al que le tenemos que mandar el GRANTED
 } SolicitudRecurso;
+
+//Uso: Para guardar en memoria quièn fue el que pidio originalmente el recurso, luego de pedirle a Erlang el mismo.
+typedef struct _SolicitudRespuestaRecurso{
+    int fd_remoto; //socket que se comunica con el otro nodo.
+    int fd_erlang; //a quien hay que darle la respuesta (socket local)
+    int job_id;
+    int activo; //1: en uso - 0:libre
+} SolicitudRespuestaRecurso;
 
 typedef struct _RecursosLocales{
     char nombre[16];
@@ -108,6 +118,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico,int mi_puerto_loc
 // GRANTED <job_id>
 // DENIED <job_id>
 // RELEASE <job_id> <resource_name> <amount>
+// LOCAL_REQUEST <job_id> <resource_name> <amount> (Conexion local entre Erlang y C)
 int validar_mensajes_validos(char * mensaje);
 
 /* 
@@ -129,5 +140,19 @@ void limpiar_nodos_caidos();
 //Inserta el nodo en la tablaNodos (si es que no existia)
 // SI existia antes, actualizamos timestamp.
 void insertar_en_tablaNodos(char * buffer);
+
+//Encuentra un nodo en la tablaNodo que tenga al recurso,
+// Devuelve el fd del socket si lo encuentra,
+// Sino, -1.
+int pedir_recurso_tablaNodos(int job_id, char * recurso_name, int amount);
+
+//ANCHOR -  Solicitud Respuesta Recursos 
+
+//Busca un hueco libre para guardar los datos relacionados.
+void guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id);
+
+// Busca el socket de erlang, libera el hueco y devuelve el mismo.
+// devuelve -1 si no lo encuentra.
+int obtener_socket_respuesta(int fd_remoto,int job_id);
 
 #endif
