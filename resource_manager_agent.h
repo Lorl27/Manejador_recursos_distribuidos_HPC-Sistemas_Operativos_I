@@ -15,7 +15,7 @@
 #include <linux/time.h>
 #include <fcntl.h>
 #include <asm-generic/socket.h>
-
+#include <errno.h>
 
 
 #define MAX_NODOS 50 // maximo de nodos que podemos llegar a conocer (simultaneas)
@@ -54,6 +54,10 @@ typedef struct _SolicitudRespuestaRecurso{
     int fd_erlang; //a quien hay que darle la respuesta (socket local)
     int job_id;
     int activo; //1: en uso - 0:libre
+    //campos para que NO sea bloqueante:
+    int conectando;  //1: esperando conexion - 0: ya conectado.
+    char recurso_name[16];
+    int amount;
 } SolicitudRespuestaRecurso;
 
 typedef struct _RecursosLocales{
@@ -95,7 +99,7 @@ int crear_servidor_tcp_local(int puerto);
 int crear_socket_broadcast(void);
 
 // Inicia conexiòn TCP hacia el agente remoto.
-// retorna fd del socket.
+// retorna fd del socket ò -1 si fallo.
 int crear_conexion_cliente(const char * ip_destino, int puerto_destino);
 
 //ANCHOR -- Eventos principales
@@ -118,7 +122,10 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico,int mi_puerto_loc
 // GRANTED <job_id>
 // DENIED <job_id>
 // RELEASE <job_id> <resource_name> <amount>
-// LOCAL_REQUEST <job_id> <resource_name> <amount> (Conexion local entre Erlang y C)
+// JOB_REQUEST <job_id> @<ip>:<recurso>:<cantidad> (Conexion entre Erlang y C)
+// JOB_RELEASE <job_id>
+// JOB_STATUS <job_id>
+// GET NODES (Conexion entre Erlang y C).
 int validar_mensajes_validos(char * mensaje);
 
 /* 
@@ -141,15 +148,17 @@ void limpiar_nodos_caidos();
 // SI existia antes, actualizamos timestamp.
 void insertar_en_tablaNodos(char * buffer);
 
-//Encuentra un nodo en la tablaNodo que tenga al recurso,
-// Devuelve el fd del socket si lo encuentra,
-// Sino, -1.
-int pedir_recurso_tablaNodos(int job_id, char * recurso_name, int amount);
+//Envia la lista de nodos a erlang (NODES ip:puerto:recursos;ip..)
+void enviar_lista_nodos(int fd_erlang);
+
+// Busca el puerto de una IP en tablaNodos
+// retorna -1 si no lo encuentra.
+int buscar_puerto_por_IP(char * ip);
 
 //ANCHOR -  Solicitud Respuesta Recursos 
 
 //Busca un hueco libre para guardar los datos relacionados.
-void guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id);
+void guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,char* recurso_name,int amount);
 
 // Busca el socket de erlang, libera el hueco y devuelve el mismo.
 // devuelve -1 si no lo encuentra.

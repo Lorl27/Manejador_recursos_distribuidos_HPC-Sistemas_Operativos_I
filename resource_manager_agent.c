@@ -81,8 +81,8 @@ int crear_servidor_tcp_publico(int puerto){
         exit(EXIT_FAILURE);
     }
 
-    //SO_REUSEADDR | SO_REUSEPORT nos permite reutilizar el puerto inmediatamente por si creashea/reinicia
-    if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+    //SO_REUSEADDR  nos permite reutilizar el puerto inmediatamente por si creashea/reinicia
+    if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
         perror("[SERVER TCP PUBLICO-ERROR] Fallo el setsockopt.\n");
         exit(EXIT_FAILURE);
     }
@@ -121,8 +121,8 @@ int crear_servidor_tcp_local(int puerto){
         exit(EXIT_FAILURE);
     }
 
-    //SO_REUSEADDR | SO_REUSEPORT nos permite reutilizar el puerto inmediatamente por si creashea/reinicia
-    if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+    //SO_REUSEADOR nos permite reutilizar el puerto inmediatamente por si creashea/reinicia
+    if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
         perror("[SERVER TCP LOCAL-ERROR] Fallo el setsockopt.\n");
         exit(EXIT_FAILURE);
     }
@@ -204,6 +204,10 @@ int crear_conexion_cliente(const char * ip_destino, int puerto_destino){
         return -1;
     }
 
+    //conf. no bloqueante
+    int flags=fcntl(sock,F_GETFL,0); //las que ya tiene el socket
+    fcntl(sock,F_SETFL,flags|O_NONBLOCK);
+
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(puerto_destino);
 
@@ -214,8 +218,14 @@ int crear_conexion_cliente(const char * ip_destino, int puerto_destino){
     }
 
     if(connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        printf("[CLIENTE-ERROR] Fallo la conexxion. \n");
-        return -1;
+        if(errno==EINPROGRESS){ //conectado por detràs
+            printf("[CLIENTE-INFO] Iniciando conexion a %s:%d.\n",ip_destino,puerto_destino);
+            return sock; //asi epoll lo espera.
+        }
+        else{
+            printf("[CLIENTE-ERROR] Fallo la conexion. \n");
+            return -1;
+        }
     }
 
     printf("[CLIENTE] Conexión TCP establecida con éxito a %s:%d\n", ip_destino, puerto_destino);
@@ -236,8 +246,7 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
     printf("[INFO-ARRANQUE] Enviando primer anuncio...\n");
     
     // anuncio mi IP - Puerto TCP- Mis recursos disponibles
-    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s", ip, puerto_tcp, recursos);
-   
+    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s.\n", ip, puerto_tcp, recursos);
     if (sendto(socket_broadcast, mensaje, strlen(mensaje), 0, (struct sockaddr*)&srv_mensajeria_broadcast, sizeof(srv_mensajeria_broadcast)) < 0) {
         perror("[ARRANQUE-ERROR] Error en sendto inicial.\n");
     }
@@ -342,7 +351,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
             exit(EXIT_FAILURE);
         }
 
-        for (int i = 0; i < n; i++) {
+        for (int i=0;i<n;i++) {
             int fd = events[i].data.fd;
             if(fd==timer){
                 uint64_t expira;
@@ -363,7 +372,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                 }
 
                 mensaje[nbytes]='\0';
-                printf("[OTRO NODO - INFO] Se recibio del nodo con IP %s el mensaje: %s.\n", inet_ntoa(((struct sockaddr_in*)&cli_name)->sin_addr),mensaje);
+                printf("[OTRO NODO - INFO] Se recibio del nodo con IP %s el mensaje: %s.\n", inet_ntoa(cli_name.sin_addr),mensaje);
 
                 insertar_en_tablaNodos(mensaje);
             }
@@ -384,85 +393,157 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                 epoll_ctl(epoll_fd, EPOLL_CTL_ADD, nuevo_cli, &ev);
             }
             else {
-                // Cliente ya conectado mandó algo
-                nbytes = recv(fd, mensaje, MAX_MSG-1, 0);
-                if(nbytes <= 0) {
-                    printf("[INFO-SERVIDOR] Cliente  %d desconectado.\n", fd);
-                    close(fd);
-                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                } 
-                else{
-                    mensaje[nbytes] = '\0';
+                uint32_t eventos= events[i].events;
 
-                    if(!validar_mensajes_validos(mensaje)) continue;
-                    
-                    printf("[INFO-SERVIDOR] Mensaje recibido: %s del cliente %d", mensaje,fd);
+                //EPOLLOUT: nuestro socket async nos avisa que YA se conecto.
+                //&: & a nivel de bits
+                // lo que sucede es que esta veriricando si el bit correspondiente a EPOLLOUT esta encendido.
+                if(eventos & EPOLLOUT){
+                    int procesandose_conexion=0;
+                    for(int x=0;x<MAX_PENDING && !procesandose_conexion;x++){
+                        int conectando=solicitud_respuesta[x].activo && solicitud_respuesta[x].fd_remoto == fd && solicitud_respuesta[x].conectando;
 
-                    char comando[16];
-                    int job_id=0;
-                    char recursos_name[16] = "";
-                    int recursos_tam=0;
+                        if(conectando){
+                            int error=0;
+                            socklen_t error_len=sizeof(error);
+                            //fue exitosa a nivel tcp?
+                            getsockopt(fd,SOL_SOCKET,SO_ERROR,&error,&error_len);
 
-                    sscanf(mensaje,"%15s %d %15s %d",comando,&job_id,recursos_name,&recursos_tam);
+                            if(error!=0){
+                                printf("[CLIENTE-ERROR] Fallo la conexión al nodo vecino.\n");
+                                //avisarle a erlang que fallo:
+                                snprintf(mensaje, sizeof(mensaje), "DENIED %d \n", solicitud_respuesta[x].job_id);
+                                send(solicitud_respuesta[x].fd_erlang, mensaje, strlen(mensaje), 0);
 
-                    //Respuestas a nuestras reservas: (MODO: CLIENTE)
-                    if(strcmp(comando,"GRANTED")==0||strcmp(comando,"DENIED")==0){
-                        
-                        printf("[INFO-SERVIDOR] Se recibio: %s para el job %d. \n",comando,job_id);
-                        int fd_erlang=obtener_socket_respuesta(fd,job_id);
-                        if(fd_erlang!=-1){
-                            printf("[INFO-RESPUESTA] Reenviando respuesta Erlang.\n");
-                            send(fd_erlang, mensaje, strlen(mensaje), 0);
-
-                            //termino la transaccion. cerramos socket y sacamos de epoll.
-                            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                            close(fd);
-                        }else{
-                            printf("[WARNING] NO pudimos encontrar a quien reenviarle %s...\n",comando);
-                        }
-                    } 
-                    //si alguien nos pidio ò libero recursos a nosotros: (MODO:SERVIDORES)
-                    else if(strcmp(comando,"RESERVE")==0||strcmp(comando,"RELEASE")==0){
-                        RecursosLocales * recurso=NULL;
-
-                        int encontrado=0;
-                        for(int x=0;x<3 && !encontrado;x++){
-                            if(strcmp(recursos_name,mi_recurso_local[x].nombre)==0){
-                                recurso=&mi_recurso_local[x];
-                                encontrado=1;
+                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+                                close(fd);
+                                solicitud_respuesta[x].activo = 0;
+                            }
+                            else{
+                                    printf("[CLIENTE-ASYNC] Conexión TCP establecida. Enviando RESERVE...\n");
+                                    
+                                    // Armamos el mensaje usando la memoria guardada
+                                    snprintf(mensaje, sizeof(mensaje), "RESERVE %d %s %d\n", solicitud_respuesta[x].job_id, solicitud_respuesta[x].recurso_name, solicitud_respuesta[x].amount);
+                                    send(fd, mensaje, strlen(mensaje), 0);
+                                    
+                                    // Ya no queremos que epoll nos avise de EPOLLOUT (escritura), 
+                                    // modificamos el socket para escuchar solo respuestas (EPOLLIN)
+                                    solicitud_respuesta[x].conectando = 0;
+                                    struct epoll_event ev_update;
+                                    ev_update.events = EPOLLIN;
+                                    ev_update.data.fd = fd;
+                                    epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev_update);
+                                }
+                                procesandose_conexion=1;
                             }
                         }
-
-                        if(recurso!=NULL) gestionar_recursos_locales(recurso,comando,job_id,recursos_tam,fd);
-                        else {
-                            printf("[INFO-SERVIDOR-WARNING] Otro nodo pidio el recurso %s, el cual no tenemos.\n",recursos_name);
-
-                            //le avisamos al nodo por su misma conexion
-                            snprintf(mensaje, sizeof(mensaje), "DENIED %d \n", job_id);
-                            send(fd, mensaje, strlen(mensaje), 0);
-                        }
-                    } 
-                    //si erlang nos pidio buscar un recurso: (MODO:INTERMEDIARIO)
-                    else if(strcmp(comando,"LOCAL_REQUEST")==0){
-                        //el fd es el del socket de erlang LOCAL
-                        int fd_remoto = pedir_recurso_tablaNodos(job_id,recursos_name,recursos_tam);
-                        
-                        if(fd_remoto!=-1){
-                            guardar_datos_solicitud_respuesta(fd_remoto,fd,job_id);
-
-                            //lo agregamos al epoll, para que nos avise(escuchar) cuando respondan GRANTED
-                            struct epoll_event ev_remoto;
-                            ev_remoto.events=EPOLLIN;
-                            ev_remoto.data.fd=fd_remoto;
-                            epoll_ctl(epoll_fd,EPOLL_CTL_ADD,fd_remoto,&ev_remoto);
-                        }else{
-                            //le avisamos a erlang que no hay recursos (DENEGADO)
-                            snprintf(mensaje, sizeof(mensaje), "DENIED %d \n", job_id);
-                            send(fd, mensaje, strlen(mensaje), 0);
-                        }
                     }
-                    
+
+                //Si hay datos nuevos para leer... (evento lectura)
+                if(eventos & EPOLLIN){
+
+                    // Cliente ya conectado mandó algo
+                    nbytes = recv(fd, mensaje, MAX_MSG-1, 0);
+                    if(nbytes <= 0) {
+                        printf("[INFO-SERVIDOR] Cliente  %d desconectado.\n", fd);
+                        close(fd);
+                        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+                    } 
+                    else{
+                        mensaje[nbytes] = '\0';
+
+                        if(!validar_mensajes_validos(mensaje)) continue;
+                        
+                        printf("[INFO-SERVIDOR] Mensaje recibido: %s del cliente %d.\n", mensaje,fd);
+
+                        char comando[16];
+                        int job_id=0;
+                        char recursos_name[16] = "";
+                        int recursos_tam=0;
+
+                        sscanf(mensaje,"%15s %d %15s %d",comando,&job_id,recursos_name,&recursos_tam);
+
+                        //Erlang nos pide la lista de nodos: GET NODES (MODO_ INTERMEDIARIO)
+                        if(strncmp(comando,"GET",3)==0) enviar_lista_nodos(fd);
+
+                        //Respuestas a nuestras reservas: (MODO: CLIENTE)
+                        else if(strcmp(comando,"GRANTED")==0||strcmp(comando,"DENIED")==0){
+                            
+                            printf("[INFO-SERVIDOR] Se recibio: %s para el job %d. \n",comando,job_id);
+                            int fd_erlang=obtener_socket_respuesta(fd,job_id);
+
+                            if(fd_erlang!=-1){
+                                printf("[INFO-RESPUESTA] Reenviando respuesta Erlang.\n");
+                                // le respondemos a Erlang con JOB_GRANTED o JOB_DENIED
+                                snprintf(mensaje, sizeof(mensaje), "JOB_%s %d\n", comando, job_id);
+                                send(fd_erlang, mensaje, strlen(mensaje), 0);
+
+                                //termino la transaccion. cerramos socket y sacamos de epoll.
+                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+                                close(fd);
+                            }else{
+                                printf("[WARNING] NO pudimos encontrar a quien reenviarle %s...\n",comando);
+                            }
+                        } 
+
+                        //si alguien nos pidio ò libero recursos a nosotros: (MODO:SERVIDORES)
+                        else if(strcmp(comando,"RESERVE")==0||strcmp(comando,"RELEASE")==0){
+                            RecursosLocales * recurso=NULL;
+
+                            int encontrado=0;
+                            for(int x=0;x<3 && !encontrado;x++){
+                                if(strcmp(recursos_name,mi_recurso_local[x].nombre)==0){
+                                    recurso=&mi_recurso_local[x];
+                                    encontrado=1;
+                                }
+                            }
+
+                            if(recurso!=NULL) gestionar_recursos_locales(recurso,comando,job_id,recursos_tam,fd);
+                            else {
+                                printf("[INFO-SERVIDOR-WARNING] Otro nodo pidio el recurso %s, el cual no tenemos.\n",recursos_name);
+
+                                //le avisamos al nodo por su misma conexion
+                                snprintf(mensaje, sizeof(mensaje), "DENIED %d \n", job_id);
+                                send(fd, mensaje, strlen(mensaje), 0);
+                            }
+                        } 
+                        
+                        //si erlang nos pidio buscar un recurso: (MODO:INTERMEDIARIO)
+                        else if(strcmp(comando,"JOB_REQUEST")==0){
+                            char ip_destino[16];
+                            // Parseamos: JOB_REQUEST 1001 @192.168.1.2:cpu:2
+                            sscanf(mensaje, "%*s %d @%15[^:]:%15[^:]:%d",&job_id, ip_destino, recursos_name, &recursos_tam);
+
+                            int puerto_destino=buscar_puerto_por_IP(ip_destino);
+
+                            if(puerto_destino!=-1){
+                                int fd_remoto=crear_conexion_cliente(ip_destino,puerto_destino);
+                                
+                                if(fd_remoto!=-1){
+                                    guardar_datos_solicitud_respuesta(fd_remoto,fd,job_id,recursos_name,recursos_tam);
+
+                                    //lo agregamos al epoll, para que nos avise(escuchar) cuando respondan GRANTED y, ademàs EPOLLOUT para saber cuadno conecto.
+                                    struct epoll_event ev_remoto;
+                                    ev_remoto.events=EPOLLIN|EPOLLOUT;
+                                    ev_remoto.data.fd=fd_remoto;
+                                    epoll_ctl(epoll_fd,EPOLL_CTL_ADD,fd_remoto,&ev_remoto);
+                                }else{
+                                    //le avisamos a erlang que no hay recursos (DENEGADO)
+                                    snprintf(mensaje, sizeof(mensaje), "JOB_DENIED %d \n", job_id);
+                                    send(fd, mensaje, strlen(mensaje), 0);
+                                }
+                            }
+                            else{
+                                printf("[WARN] Erlang pidio conectar a %s, pero no esta en la tabla de activos...\n", ip_destino);
+                                snprintf(mensaje, sizeof(mensaje), "JOB_DENIED %d \n", job_id);
+                                send(fd, mensaje, strlen(mensaje), 0);
+                            }
+                            
+                        }
+                        
+                    }
                 }
+
             }
         }
     }
@@ -472,28 +553,43 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
 //* --- Validaciones y gestiones ----
 
 int validar_mensajes_validos(char * mensaje){
-    char comando[16];
+    char comando[32];
     int job_id;
-    char recursos_name[16] = "";
+    char recursos_name[32] = "";
+    char ip_destino[32] = "";
+    char sub_comando[32] = "";
     int recursos_tam;
 
-    int recibidos = sscanf(mensaje,"%15s %d %15s %d",comando,&job_id,recursos_name,&recursos_tam);
+    int recibidos = sscanf(mensaje,"%31s",comando);
 
-    if(recibidos>=2){
-        if(strcmp(comando,"GRANTED")==0 || strcmp(comando,"DENIED")==0) return 1; 
-        
-        if(strcmp(comando,"RESERVE")==0 ||strcmp(comando,"RELEASE")==0 || strcmp(comando,"LOCAL_REQUEST")==0 ){
-            if(recibidos!=4){
-                printf("[INFO-WARNING] Mensaje recibido (%s) no valido. Faltan parametros.\n",mensaje);
-                return 0;
-            }
-            else return 1;
+    if(recibidos!=1){
+        //PIDE RECURSOS
+        if(strcmp(comando,"RESERVE")==0 ||strcmp(comando,"RELEASE")==0){
+            if(sscanf(mensaje,"%*s %d %31s %d",&job_id,recursos_name,&recursos_tam)==3) return 1; // (IGNORADA) JOB_ID RECURSO CANTIDAD
         }
+
+        //RESPONDE
+        else if(strcmp(comando,"GRANTED")==0 || strcmp(comando,"DENIED")==0){
+            //%*s lee la palabra pero la ignora, pasa a la sig.
+            if(sscanf(mensaje,"%*s %d",&job_id)==1) return 1; //(IGNORADA) JOB_ID
+        }
+
+        //ERLANG PIDE LISTA NODOS
+        else if(strcmp(comando,"GET")==0){
+            if(sscanf(mensaje,"%*s %31s",sub_comando)==1){ // (IGNORADA) SUBCOMANDO
+                if(strcmp(sub_comando,"NODES")==0) return 1; //(IGNORADA) NODES
+            }
+        }
+
+        //ERLANG PIDE BUSCAR RECURSO AFUERA.
+        else if(strcmp(comando,"JOB_REQUEST")==0){
+            if(sscanf(mensaje, "%*s %d @%31[^:]:%31[^:]:%d",&job_id,ip_destino,recursos_name,&recursos_tam)==4) return 1; //(IGNORADO) JOB_REQUEST JOB_ID @IP:RECURSO:CANTIDAD
+        }
+        
     }
-    
+
     printf("[INFO-WARNING] Mensaje recibido (%s) no valido.\n",mensaje);
     return 0;
-    
 }
 
 void gestionar_recursos_locales(RecursosLocales * recurso, char * comando, int job_id, int amount, int fd_cliente){
@@ -604,38 +700,47 @@ void insertar_en_tablaNodos(char * buffer){
 
 }
 
-int pedir_recurso_tablaNodos(int job_id, char * recurso_name, int amount){
-    char mensaje_reserva[MAX_MSG];
+void enviar_lista_nodos(int fd_erlang){
+    char buffer[MAX_MSG];
+    strcpy(buffer, "NODES\n");
+
     for(int x=0;x<cantidad_nodos;x++){
-        //busca la palabra completa
-        if(strstr(tabla_activos[x].recursos,recurso_name)!=NULL){
-            printf("[INFO-CLIENTE] Se ha encontrado el recurso %s en el nodo %s:%d.\n",recurso_name,tabla_activos[x].IP,tabla_activos[x].puerto);
+        char nodo[256];
+        snprintf(nodo, sizeof(nodo), "%s:%d:%s;",tabla_activos[x].IP,tabla_activos[x].puerto,tabla_activos[x].recursos);
+        strncat(buffer, nodo, MAX_MSG-strlen(buffer)-1);
+    }
+    strncat(buffer,"\n",MAX_MSG-strlen(buffer)-1); //agregamos \n
 
-            int fd=crear_conexion_cliente(tabla_activos[x].IP,tabla_activos[x].puerto);
+    send(fd_erlang, buffer, strlen(buffer), 0);
+    printf("[INFO-SERVIDOR] Lista de nodos enviada a Erlang.\n");
+}
 
-            if(fd>0){
-                snprintf(mensaje_reserva, sizeof(mensaje_reserva), "RESERVE %d %s %d\n", job_id, recurso_name, amount);
-                send(fd, mensaje_reserva, strlen(mensaje_reserva), 0);
-                
-                printf("[INFO-CLIENTE] RESERVE enviado exitosamente. Esperando respuesta en fd %d\n", fd);
-                return fd;
-            }
+int buscar_puerto_por_IP(char * ip){
+    for(int x=0;x<cantidad_nodos;x++){
+        if(strcmp(tabla_activos[x].IP,ip)==0){
+            return tabla_activos[x].puerto;
         }
     }
 
-    printf("[INFO-CLIENTE-WARNING] Ningun nodo activo cuenta con el recurso %s. \n",recurso_name);
     return -1;
 }
 
 //* ----  Solicitud Respuesta Recursos  ----
 
-void guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id){
+void guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,char* recurso_name,int amount){
     for(int x=0;x<MAX_PENDING;x++){
         if(!solicitud_respuesta[x].activo){
             solicitud_respuesta[x].activo=1;
             solicitud_respuesta[x].fd_erlang=fd_erlang;
             solicitud_respuesta[x].fd_remoto=fd_remoto;
             solicitud_respuesta[x].job_id=job_id;
+
+            //guardamos los datos, para luego mandar el RESERVE.
+            solicitud_respuesta[x].conectando=1;
+            solicitud_respuesta[x].amount=amount;
+            strncpy(solicitud_respuesta[x].recurso_name,recurso_name,15);
+            solicitud_respuesta[x].recurso_name[15]='\0';
+
             printf("[SOLICITUD RESPUESTA] Se registro la relacion fd_remoto %d => fd_erlang %d con job_id %d.\n",fd_remoto,fd_erlang,job_id);
             return;
         }
