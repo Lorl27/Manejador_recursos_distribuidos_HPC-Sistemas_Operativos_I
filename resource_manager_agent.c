@@ -11,6 +11,8 @@ RecursosLocales mi_recurso_local[3]; //cpu - gpu - mem
 
 SolicitudRespuestaRecurso solicitud_respuesta[MAX_PENDING];
 
+TablaJobActivos tabla_jobs_activos[MAX_JOBS_ACTIVOS];
+
 //*-------------------------------------------
 
 //* --- INICIALIZACIÒN ---
@@ -470,6 +472,10 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                         else if(strcmp(comando,"GRANTED")==0||strcmp(comando,"DENIED")==0){
                             
                             printf("[INFO-SERVIDOR] Se recibio: %s para el job %d. \n",comando,job_id);
+                            
+                            if(strcmp(comando,"GRANTED")==0) marcar_job_concedido(job_id);
+                            else liberar_job(job_id);
+                            
                             int fd_erlang=obtener_socket_respuesta(fd,job_id);
 
                             if(fd_erlang!=-1){
@@ -521,6 +527,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                                 
                                 if(fd_remoto!=-1){
                                     guardar_datos_solicitud_respuesta(fd_remoto,fd,job_id,recursos_name,recursos_tam);
+                                    registrar_recurso_job(job_id,ip_destino,puerto_destino,recursos_name,recursos_tam);
 
                                     //lo agregamos al epoll, para que nos avise(escuchar) cuando respondan GRANTED y, ademàs EPOLLOUT para saber cuadno conecto.
                                     struct epoll_event ev_remoto;
@@ -539,6 +546,30 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                                 send(fd, mensaje, strlen(mensaje), 0);
                             }
                             
+                        }
+
+                        //si erlang libera un job:
+                        else if(strcmp(comando,"JOB_RELEASE")==0){
+                            sscanf(mensaje,"%*s %d",&job_id);
+                            printf("[ERLANG-C] Erlang solicita liberar el job %d. \n",job_id);
+
+                            liberar_job(job_id);
+                        }
+
+                        //si erlang consulta el estado de un job:
+                        else if(strcmp(comando,"JOB_STATUS")==0){
+                            sscanf(mensaje,"%*s %d",&job_id);
+                            printf("[ERLANG-C] Erlang solicita conocer el estado del job %d. \n",job_id);
+
+                            int estado=conocer_estado_job(job_id);
+
+                            if(estado!=-1){
+                                printf("[ERLANG-C] El estado del job %d es: %d\n", job_id,estado);
+                                snprintf(mensaje, sizeof(mensaje), "JOB_STATUS %d \n", estado);
+                                send(fd, mensaje, strlen(mensaje), 0);
+                            }else{
+                                printf("[ERLANG-C WARNING] NO se encontro estado para el job %d. \n",job_id);
+                            }
                         }
                         
                     }
@@ -584,6 +615,11 @@ int validar_mensajes_validos(char * mensaje){
         //ERLANG PIDE BUSCAR RECURSO AFUERA.
         else if(strcmp(comando,"JOB_REQUEST")==0){
             if(sscanf(mensaje, "%*s %d @%31[^:]:%31[^:]:%d",&job_id,ip_destino,recursos_name,&recursos_tam)==4) return 1; //(IGNORADO) JOB_REQUEST JOB_ID @IP:RECURSO:CANTIDAD
+        }
+
+        //ERLANG GESTIONA UN JOB ACTIVO
+        else if(strcmp(comando,"JOB_STATUS")==0 || strcmp(comando,"JOB_RELEASE")==0){
+            if(sscanf(mensaje,"%*s %d",&job_id)==1) return 1; //(IGNORADA) JOB_ID
         }
         
     }
@@ -760,4 +796,121 @@ int obtener_socket_respuesta(int fd_remoto,int job_id){
     }
     printf("[SOLICITUD RESPUESTA WARNING] No se encontro socket de erlang valido para el fd %d con job %d.\n",fd_remoto,job_id);
     return -1;
+}
+
+
+//* -- MANEJO TABLA DE JOB ACTIVOS ---
+
+void liberar_job(int job_id){
+    int encontrado=0;
+    char mensaje_job[MAX_MSG];
+
+    for(int x=0;x<MAX_JOBS_ACTIVOS && !encontrado;x++){
+        if(job_id==tabla_jobs_activos[x].job_id && tabla_jobs_activos[x].estado_job!=0){
+            encontrado=1;
+            
+            //Recorremos todos los recursos del job:
+            for(int y=0;y<tabla_jobs_activos[x].cantidad_recursos;y++){
+                char * ip=tabla_jobs_activos[x].recursos[y].ip;
+                int puerto=tabla_jobs_activos[x].recursos[y].puerto;
+                char * recurso_name=tabla_jobs_activos[x].recursos[y].recurso_name;
+                int cantidad=tabla_jobs_activos[x].recursos[y].amount;
+ 
+                int fd_remoto=crear_conexion_cliente(ip,puerto);
+
+                if(fd_remoto!=-1){
+                    // Le avisamos que ya no lo usamos
+                    snprintf(mensaje_job, sizeof(mensaje_job), "RELEASE %d %s %d\n", job_id, recurso_name, cantidad);
+                    send(fd_remoto, mensaje_job, strlen(mensaje_job), 0);
+                    
+                    printf("[INFO-RED] RELEASE enviado a %s:%d por el recurso %s.\n", ip, puerto, recurso_name);
+                    
+                    // como es un aviso, cerramos.
+                    close(fd_remoto);
+                }else{
+                    printf("[WARNING] No se pudo contactar a %s:%d para liberar el recurso %s.\n", ip, puerto, recurso_name);
+                }
+
+            }
+
+            //Ahora, liberamos en la tabla nuestra:
+            tabla_jobs_activos[x].estado_job=0;
+            tabla_jobs_activos[x].cantidad_recursos=0;
+            printf("[INFO - TABLA JOBS] Se ha liberado el job %d.\n",job_id);
+        }
+    }
+
+    if(!encontrado) printf("[INFO- TABLA JOBS] NO se encontro el job %d. No se pudo liberar.\n",job_id);
+}
+
+
+int conocer_estado_job(int job_id){
+    for(int x=0;x<MAX_JOBS_ACTIVOS;x++){
+        if(tabla_jobs_activos[x].job_id==job_id && tabla_jobs_activos[x].estado_job!=0){
+            return tabla_jobs_activos[x].estado_job;
+        }
+    }
+    return -1;
+}
+
+void marcar_job_concedido(int job_id){
+    for(int x=0;x<MAX_JOBS_ACTIVOS;x++){
+        if(tabla_jobs_activos[x].estado_job!=0 && tabla_jobs_activos[x].job_id==job_id){
+            tabla_jobs_activos[x].estado_job=2;
+            printf("[INFO-TABLA JOBS] Job %d marcado como CONCEDIDO.\n", job_id);
+            return;
+        }
+    }
+}
+
+void registrar_recurso_job(int job_id, char* ip, int puerto, char* recurso_name, int amount){
+    int indice=-1;
+    int encontrado=0;
+
+    for(int x=0;x<MAX_JOBS_ACTIVOS && !encontrado;x++){
+        if(tabla_jobs_activos[x].estado_job!=0 && tabla_jobs_activos[x].job_id==job_id){
+            indice=x;
+            encontrado=1;
+        }
+    }
+
+    //si no existe... : lo creamos
+    if(indice==-1){
+        encontrado=0;
+        for(int x=0;x<MAX_JOBS_ACTIVOS && !encontrado;x++){
+            if(tabla_jobs_activos[x].estado_job==0){
+                indice=x;
+                tabla_jobs_activos[x].job_id=job_id;
+                tabla_jobs_activos[x].estado_job=1;
+                tabla_jobs_activos[x].cantidad_recursos=0;
+                encontrado=1;
+            }
+        }   
+    }
+    
+    // Insertamos los datos.
+    if(indice!=-1){ 
+        int r=tabla_jobs_activos[indice].cantidad_recursos;
+        
+        if(r<MAX_RECURSOS_POR_JOB){
+            RecursoConcedido * tabla=&tabla_jobs_activos[indice].recursos[r];
+            strncpy(tabla->ip, ip, 15);
+            tabla->ip[15]='\0';
+            
+            tabla->puerto=puerto;
+            
+            strncpy(tabla->recurso_name,recurso_name,15);
+            tabla->recurso_name[15] ='\0';
+            
+            tabla->amount=amount;
+            
+            tabla_jobs_activos[indice].cantidad_recursos++;
+        }else{
+            printf("[WARNING] El job %d superó el máximo de %d recursos permitidos.\n", job_id, MAX_RECURSOS_POR_JOB);
+        }
+
+    }else{
+        printf("[WARNING] Tabla de jobs llena. No se pudo registrar el job %d.\n", job_id);
+    }
+    
 }

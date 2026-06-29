@@ -22,6 +22,8 @@
 #define MAX_MSG 1024
 #define MAX_EVENTS 64 //cant eventos epoll (simultaneos)
 #define MAX_PENDING 100 // maximo de peticiones hacia otros nodos (simultaneas)
+#define MAX_JOBS_ACTIVOS 100
+#define MAX_RECURSOS_POR_JOB 5
 
 #define INTERVALO_SEG 3
 #define TIEMPO_CAIDO 15
@@ -66,6 +68,22 @@ typedef struct _RecursosLocales{
     int cantidadDisponible;
     Cola solicitudesPendientes;
 }RecursosLocales;
+
+// USO: Para saber a quien le pedimos què cosa
+typedef struct _RecursoConcedido {
+    char ip[16];
+    int puerto;
+    char recurso_name[16];
+    int amount;
+} RecursoConcedido;
+
+typedef struct _TablaJobActivos {
+    int job_id;
+    int estado_job; // 0=libre - 1=solicitando - 2=activo
+    int cantidad_recursos;
+    RecursoConcedido recursos[MAX_RECURSOS_POR_JOB]; 
+} TablaJobActivos;
+
 
 //ANCHOR -- Inicializaciòn
 
@@ -163,5 +181,21 @@ void guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,ch
 // Busca el socket de erlang, libera el hueco y devuelve el mismo.
 // devuelve -1 si no lo encuentra.
 int obtener_socket_respuesta(int fd_remoto,int job_id);
+
+//ANCHOR - MANEJO TABLA DE JOB ACTIVOS 
+
+//Libera el job de la tabla de jobs activos, si es que lo encuentra.
+//Avisa a los nodos remotos de la liberaciòn.
+void liberar_job(int job_id);
+
+//Retorna el estado del job_id 
+// -1 si no lo encuentra.
+int conocer_estado_job(int job_id);
+
+//Actualiza el estado del job
+void marcar_job_concedido(int job_id);
+
+// Registra un nuevo recurso solicitado para un Job en la tabla
+void registrar_recurso_job(int job_id, char* ip, int puerto, char* recurso_name, int amount);
 
 #endif
