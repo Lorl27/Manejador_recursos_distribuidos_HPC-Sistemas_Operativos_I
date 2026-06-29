@@ -46,8 +46,4 @@ Destruye toda la COla
 */
 Cola cola_destruir(Cola cola, FuncionDestructora destroy);
 
-//retorna 1  si el elemento esta en la Cola, 0 si no.
-int cola_contiene(Cola cola, void *dato_buscado, FuncionComparadora comp, FuncionCopia copy, FuncionDestructora destroy);
-
-
 #endif

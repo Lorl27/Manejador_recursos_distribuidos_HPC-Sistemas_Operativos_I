@@ -1,20 +1,24 @@
 #ifndef __RESOURCE_MANAGER_AGENT_H__
 #define __RESOURCE_MANAGER_AGENT_H__
 
+#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <stdio.h>
-#include <cola.h>
+#include "cola.h"
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <time.h>
+#include <sys/time.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
-#include <linux/time.h>
+//#include <linux/time.h>
 #include <fcntl.h>
-#include <asm-generic/socket.h>
+//#include <asm-generic/socket.h>
 #include <errno.h>
 
 

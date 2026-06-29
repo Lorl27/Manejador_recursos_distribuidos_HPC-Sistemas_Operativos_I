@@ -66,26 +66,3 @@ Cola cola_destruir(Cola cola, FuncionDestructora destroy){
     free(cola);
     return NULL;
 }
-
-int cola_contiene(Cola cola, void *dato_buscado, FuncionComparadora comp, FuncionCopia copy, FuncionDestructora destroy) {
-    if (isEmpty(cola)) return 0;
-
-    int encontrado = 0;
-    Cola aux = Cola_crear();
-
-    while (!isEmpty(cola)) {
-        void *frente = Top(cola);
-        if (comp(frente, dato_buscado) == 0) encontrado = 1;
-    
-        aux=Encolar(aux, frente, copy);
-        cola = Desencolar(cola, destroy);
-    }
-
-    while (!isEmpty(aux)) {
-        cola=Encolar(cola, Top(aux), copy);
-        aux = Desencolar(aux, destroy);
-    }
-
-    aux=cola_destruir(aux, destroy);
-    return encontrado;
-}

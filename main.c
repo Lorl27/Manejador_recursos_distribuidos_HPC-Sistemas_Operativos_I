@@ -1,8 +1,8 @@
 #include "resource_manager_agent.h"
 
 int main(int argc, char *argv[]) {
-    //  Validamos que el usuario nos pase los 3 parámetros que necesitamos
-    if (argc != 4) {
+    //  Validamos que el usuario nos pase los 4 parámetros que necesitamos
+    if (argc != 5) {
         printf("[MAIN-WARNING] Faltan parámetros de configuración.\n");
         printf("[MAIN] Uso: %s <IP_LAN> <PUERTO_PUBLICO> <PUERTO_LOCAL_ERLANG> \"<RECURSOS>\" \n", argv[0]);
         printf("[MAIN] Ejemplo: %s 192.168.1.50 8100 9000 \"cpu:4 mem:8192 gpu:1\"\n", argv[0]);
