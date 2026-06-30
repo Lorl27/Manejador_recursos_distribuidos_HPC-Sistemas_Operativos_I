@@ -1,6 +1,7 @@
 #include "resource_manager_agent.h"
 
 //* ----- Variables globales para el manejo de mensajes, recursos y nodos. -----
+
 char mensaje[MAX_MSG];
 struct sockaddr_in srv_mensajeria_broadcast;
 
@@ -69,6 +70,41 @@ void* copiar_solicitud(void* dato) {
 
 void destruir_solicitud(void* dato) {
     free(dato);
+}
+
+Cola purgar_solicitudes_por_fd(Cola cola, int fd_caido){
+    if(isEmpty(cola)) return cola;
+    
+    GNode *actual = cola->inicio;
+    GNode *anterior = NULL;
+
+    while (actual != NULL) {
+        SolicitudRecurso *soli = (SolicitudRecurso *)actual->dato;
+
+        if(soli->fd_origen==fd_caido){
+
+            if(actual==cola->inicio){
+                cola->inicio = actual->sig;
+                if(cola->inicio==NULL) cola->fin=NULL;
+            } 
+            else{
+                anterior->sig = actual->sig;
+                if(actual==cola->fin) cola->fin=anterior; 
+            }
+
+            GNode *temp = actual;
+            actual = actual->sig;
+            destruir_solicitud(temp->dato);
+            free(temp);
+            
+            printf("[INFO-LIMPIEZA] Solicitud %d eliminada de la cola por caída del cliente %d.\n", soli->job_id, fd_caido);
+        } 
+        else{
+            anterior = actual;
+            actual = actual->sig;
+        }
+    }
+    return cola;
 }
 
 //* --- CREACION DE SERVIDORES ---
@@ -173,14 +209,14 @@ int crear_socket_broadcast() {
         exit(EXIT_FAILURE);
     }
 
-    //^ ===== AGREGAR ESTO PARA PERMITIR MÚLTIPLES NODOS EN LOCALHOST
+    // Permite MÚLTIPLES NODOS EN LOCALHOST
     if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("[BROADCAST-ERROR] Seteando SO_REUSEADDR.\n");
     }
     if(setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
         perror("[BROADCAST-ERROR] Seteando SO_REUSEPORT.\n");
     }
-    //^ =========================
+    
 
     // configura la dirección de destino para los envíos
     memset(&srv_mensajeria_broadcast, 0, sizeof(srv_mensajeria_broadcast));
@@ -258,7 +294,7 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
     printf("[INFO-ARRANQUE] Enviando primer anuncio...\n");
     
     // anuncio mi IP - Puerto TCP- Mis recursos disponibles
-    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s.\n", ip, puerto_tcp, recursos);
+    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s\n", ip, puerto_tcp, recursos);
     if (sendto(socket_broadcast, mensaje, strlen(mensaje), 0, (struct sockaddr*)&srv_mensajeria_broadcast, sizeof(srv_mensajeria_broadcast)) < 0) {
         perror("[ARRANQUE-ERROR] Error en sendto inicial.\n");
     }
@@ -285,6 +321,8 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
 
 void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_local, char* mis_recursos){
     
+    signal(SIGPIPE, SIG_IGN); //Ignorar desconexion inesperada de nodo remoto.
+
     int srv_public=crear_servidor_tcp_publico(mi_puerto_publico);
     int srv_local=crear_servidor_tcp_local(mi_puerto_local);
 
@@ -480,8 +518,9 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                     nbytes = recv(fd, mensaje, MAX_MSG-1, 0);
                     if(nbytes <= 0) {
                         printf("[INFO-SERVIDOR] Cliente  %d desconectado.\n", fd);
-                        close(fd);
+                        limpiar_recursos_por_desconexion(fd);
                         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+                        close(fd);
                     } 
                     else{
                         mensaje[nbytes] = '\0';
@@ -517,24 +556,78 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                             }
 
                             if(soli!=NULL){
-                                // RECIEN nos dijeron que SI, ACA lo registramos:
-                                if(strcmp(comando,"GRANTED")==0){
-                                    registrar_recurso_job(job_id, soli->ip, soli->puerto, soli->recurso_name, soli->amount);
-                                    marcar_job_concedido(job_id);
-                                } // Nos dijeron que NO: como no lo registramos nunca, solo lo borramos.
-                                else eliminar_job(job_id);
-                                
-                                int fd_erlang= soli->fd_erlang;
-                                soli->activo=0;
-
-                                if(fd_erlang!=-1){
-                                    printf("[INFO-RESPUESTA] Reenviando respuesta Erlang.\n");
-                                    // le respondemos a Erlang con JOB_GRANTED o JOB_DENIED
-                                    snprintf(mensaje, sizeof(mensaje), "JOB_%s %d\n", comando, job_id);
-                                    ssize_t enviados =send(fd_erlang, mensaje, strlen(mensaje), 0);
-                                    if(enviados==-1) perror("[ERROR-RESPUESTA] Error en send() respuesta erlang.");
+                                //Buscamos el job en la tabla de Jobs activos:
+                                int encontrado=0;
+                                int indice_job=-1;
+                                for(int y=0;y<MAX_JOBS_ACTIVOS && !encontrado;y++){
+                                    if(tabla_jobs_activos[y].estado_job!=0 && tabla_jobs_activos[y].job_id==job_id){
+                                        indice_job=y;
+                                        encontrado=1;
+                                    }
                                 }
+                                
+                                if(indice_job!=-1){
+                                    tabla_jobs_activos[indice_job].cantidad_respondidos++;
 
+                                    // RECIEN nos dijeron que SI, ACA lo registramos:
+                                    if(strcmp(comando,"GRANTED")==0) registrar_recurso_job(job_id, soli->ip, soli->puerto, soli->recurso_name, soli->amount);
+                                    else tabla_jobs_activos[indice_job].cantidad_denegados++; //nos dijeron que NO
+                                    
+                                    //recibimos todas las respuestas?
+                                    if(tabla_jobs_activos[indice_job].cantidad_respondidos==tabla_jobs_activos[indice_job].cantidad_esperados){
+                                        int fd_erlang= soli->fd_erlang;  //NOTE - se asume que todos usan el mismo fd de erlang.
+                                        
+                                        if(tabla_jobs_activos[indice_job].cantidad_denegados==0){
+                                            //EXITO COMPLETO.
+                                            tabla_jobs_activos[indice_job].estado_job=2; // lo marcamos como concedido.
+                                            printf("[INFO-RESPUESTA] Job %d completado exitosamente. Reenviando respuesta a Erlang.\n", job_id);
+                                            
+                                            if(fd_erlang!=-1){
+                                                // le respondemos a Erlang con JOB_GRANTED
+                                                snprintf(mensaje, sizeof(mensaje), "JOB_GRANTED %d\n", job_id);
+                                                ssize_t enviados =send(fd_erlang, mensaje, strlen(mensaje), 0);
+                                                if(enviados==-1) perror("[ERROR-RESPUESTA] Error en send() respuesta erlang.");
+                                            }
+                                        }else{ //AL MENOS UNO FALLO...
+                                            printf("[INFO-RESPUESTA] Job %d denegado parcialmente. Liberando los Granted parciales y avisando a Erlang.\n", job_id);
+                    
+                                            // Tenemos que liberar los recursos que SÍ nos dieron
+                                            liberar_job(job_id, epoll_fd);
+
+                                            if(fd_erlang!=-1){
+                                                // le respondemos a Erlang con JOB_DENIED
+                                                snprintf(mensaje, sizeof(mensaje), "JOB_DENIED %d\n", job_id);
+                                                ssize_t enviados =send(fd_erlang, mensaje, strlen(mensaje), 0);
+                                                if(enviados==-1) perror("[ERROR-RESPUESTA] Error en send() respuesta erlang.");
+                                            }
+                                        }
+                                    }
+                                }
+                                else{
+                                    printf("[WARNING] Llegó respuesta para Job %d, pero no está en la tabla (probablemente ya fue denegado/abortado).\n", job_id);
+                                    // Si el nodo remoto nos dio el recurso (GRANTED), pero nosotros ya cancelamos
+                                    // el Job localmente, tenemos que devolverle el recurso (RELEASE) para no dejar el recurso trabado.
+                                    if(strcmp(comando, "GRANTED")==0 && soli!= NULL){
+                                        printf("[INFO-RECUPERACION] Enviando RELEASE compensatorio a %s:%d por el recurso %s.\n", soli->ip, soli->puerto, soli->recurso_name);
+                                        
+                                        int fd_compensacion = crear_conexion_cliente(soli->ip, soli->puerto);
+                                        if(fd_compensacion != -1){
+                                            // No hay fd_erlang que avisar, así que pasamos -1
+                                            if(guardar_datos_solicitud_respuesta(fd_compensacion, -1, job_id, soli->recurso_name, soli->amount, soli->ip, soli->puerto, 1)){
+                                                struct epoll_event ev_compensacion;
+                                                ev_compensacion.events = EPOLLOUT; // Queremos saber cuándo conecta para mandar el RELEASE
+                                                ev_compensacion.data.fd = fd_compensacion;
+                                                epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd_compensacion, &ev_compensacion);
+                                            }
+                                            else{
+                                                printf("[ERROR-RECUPERACION] No hay hueco en solicitudes pendientes para enviar el RELEASE compensatorio.\n");
+                                                close(fd_compensacion);
+                                            }
+                                        }
+                                        else printf("[ERROR-RECUPERACION] No se pudo conectar a %s:%d para enviar el RELEASE compensatorio.\n", soli->ip, soli->puerto);
+                                    }
+                                }
+                                soli->activo=0;
                             }
                             else{
                                 printf("[WARNING] NO pudimos encontrar a quien reenviarle %s...\n",comando);
@@ -572,6 +665,57 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                         else if(strcmp(comando,"JOB_REQUEST")==0){
                             sscanf(mensaje,"%*s %d",&job_id); //obtener job_id
 
+                            int job_duplicado = 0;
+                            for(int x=0;x<MAX_JOBS_ACTIVOS;x++){
+                                if(tabla_jobs_activos[x].estado_job!= 0 && tabla_jobs_activos[x].job_id==job_id){
+                                    job_duplicado = 1;
+                                    break;
+                                }
+                            }
+                            
+                            if(job_duplicado){
+                                printf("[WARNING] Erlang intentó crear el Job %d, pero ya existe. Ignorando.\n", job_id);
+                                snprintf(mensaje, sizeof(mensaje), "JOB_DENIED %d \n", job_id);
+                                ssize_t enviados =send(fd, mensaje, strlen(mensaje), 0);
+                                if(enviados==-1) perror("[ERROR] Error en send() de JOB_DENIED");
+                                continue;
+                            }
+
+                            int cantidad_pedida= contar_recursos_pedidos_Erlang(mensaje);
+                            if(cantidad_pedida==0){
+                                printf("[WARNING] JOB_REQUEST %d fue recibido sin recursos solicitados...\n",job_id);
+                                snprintf(mensaje, sizeof(mensaje), "JOB_DENIED %d \n", job_id);
+                                ssize_t enviados =send(fd, mensaje, strlen(mensaje), 0);
+                                if(enviados==-1) perror("[SERVIDOR-ERROR] Error en send() de DENIED");
+                                continue;
+                            }
+
+                            //Inicializar el job en la tabla:
+                            int indice_job=-1;
+                            int found=0;
+                            for(int x=0;x<MAX_JOBS_ACTIVOS && !found;x++){
+                                if(tabla_jobs_activos[x].estado_job==0){
+                                    indice_job=x;
+                                    memset(&tabla_jobs_activos[x], 0, sizeof(TablaJobActivos));
+                                    tabla_jobs_activos[x].job_id = job_id;
+                                    tabla_jobs_activos[x].estado_job = 1;
+                                    tabla_jobs_activos[x].cantidad_esperados = cantidad_pedida;
+                                    tabla_jobs_activos[x].cantidad_respondidos = 0;
+                                    tabla_jobs_activos[x].cantidad_denegados = 0;
+                                    tabla_jobs_activos[x].cantidad_recursos = 0;
+                                    found=1;
+                                }
+                            }
+
+                            //Validar si hay espacio en la tabla:
+                            if(indice_job==-1) {
+                                printf("[WARNING] Tabla de jobs llena. No se puede procesar el JOB_REQUEST %d.\n", job_id);
+                                snprintf(mensaje, sizeof(mensaje), "JOB_DENIED %d \n", job_id);
+                                ssize_t enviados =send(fd, mensaje, strlen(mensaje), 0);
+                                if(enviados==-1) perror("[ERROR] Error en send() de JOB_DENIED");
+                                continue;
+                            }
+
                             char copia_mensaje[MAX_MSG];
                             strcpy(copia_mensaje,mensaje); //strtok modifica el str.
 
@@ -601,6 +745,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                                                 epoll_ctl(epoll_fd,EPOLL_CTL_ADD,fd_remoto,&ev_remoto);
                                             }else{
                                                 //NO hay hueco.
+                                                printf("[WARNING] No hay hueco en solicitudes pendientes para %s.\n", recursos_name);
                                                 close(fd_remoto);
                                                 todos_exitosos=0;
                                             }
@@ -624,13 +769,18 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                             }
 
                             if(!todos_exitosos){
+
+                                // Como fallo al menos uno desde el inicio, abortamos todo el Job.
+                                printf("[INFO-RESPUESTA] Error inicial al procesar JOB_REQUEST %d. Abortando.\n", job_id);
+                                
+                                // Liberamos lo que hayamos llegado a registrar o mandar  (ROLLBACK)
+                                liberar_job(job_id, epoll_fd);
+
                                 //le avisamos a erlang que fallamos:
                                 snprintf(mensaje, sizeof(mensaje), "JOB_DENIED %d \n", job_id);
                                 ssize_t enviados =send(fd, mensaje, strlen(mensaje), 0);
                                 if(enviados==-1) perror("[ERROR] Error en send() de JOB_DENIED");
 
-                                //Le delegamos el rollback a Erlang, èste deberìa enviar JOB_RELEASE <JOB_ID> cuando cancela/termina un job (Cuando le mandamos JOB_DENIED <JOB_ID>)
-                                // Al mandar eso, liberar_job recorre TablaJobActivos y libera (RELEASE) los nodos y recursos que podrìan haber quedado 'secuestrados'.
                             }
                             
                         }
@@ -723,6 +873,13 @@ void gestionar_recursos_locales(RecursosLocales * recurso, char * comando, int j
         if(recurso->cantidadDisponible>=amount && amount<=recurso->capacidadTotal){
             recurso->cantidadDisponible-=amount;
 
+            //Registro de asignacion
+            int pos = recurso->cantidad_asignaciones;
+            recurso->asignaciones[pos].fd_cliente = fd_cliente;
+            recurso->asignaciones[pos].amount = amount;
+            recurso->asignaciones[pos].job_id = job_id;
+            recurso->cantidad_asignaciones++;
+
             //Armamos y mandamos la respuesta TCP al agente que la pidió
             snprintf(respuesta, sizeof(respuesta), "GRANTED %d\n", job_id);
             ssize_t enviados =send(fd_cliente, respuesta, strlen(respuesta), 0);
@@ -765,7 +922,51 @@ void gestionar_recursos_locales(RecursosLocales * recurso, char * comando, int j
     }
 }
 
+int contar_recursos_pedidos_Erlang(char *mensaje_original){
+    int cantidad=0;
+    char copia[MAX_MSG];
+    strcpy(copia,mensaje_original);
 
+    char *token =strtok(copia," "); //salta JOB_REQUEST
+    token =strtok(NULL, " "); // salta job_id
+    token = strtok(NULL, " "); // Este es el primer posible recurso
+    
+    // Contamos cuántos tokens tienen el caracter '@'
+    while(token != NULL) {
+        if(strchr(token, '@') != NULL) {
+            cantidad++;
+        }
+        token = strtok(NULL, " ");
+    }
+
+    return cantidad;
+}
+
+
+void limpiar_recursos_por_desconexion(int fd_caido) {
+    printf("[INFO-LIMPIEZA] Iniciando limpieza de recursos para fd caido %d.\n", fd_caido);
+    for(int x=0;x<3;x++){ // (cpu, gpu, mem)
+        RecursosLocales *res = &mi_recurso_local[x];
+
+        //  Limpiar cola de espera (si estaba esperando, ya no existe)
+        res->solicitudesPendientes = purgar_solicitudes_por_fd(res->solicitudesPendientes, fd_caido);
+
+        //  Recuperar recursos prestados
+        for(int y=0;y<res->cantidad_asignaciones;y++) {
+            if(res->asignaciones[y].fd_cliente==fd_caido){
+                int cantidad_recuperada= res->asignaciones[y].amount;
+                res->cantidadDisponible+= cantidad_recuperada;
+                printf("[INFO-LIMPIEZA] Recuperados %d de %s del job %d.\n", 
+                cantidad_recuperada, res->nombre, res->asignaciones[y].job_id);
+
+                //Movemos el ultimo al hueco actual.
+                res->asignaciones[y]=res->asignaciones[res->cantidad_asignaciones-1];
+                res->cantidad_asignaciones--;
+                y--; // para revisar otra vez , ya que movimos uno.
+            }
+        }
+    }
+}
 
 //* --- MANEJO TABLA NODOS ----
 
@@ -888,7 +1089,6 @@ int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,cha
 
 void liberar_job(int job_id,int epoll_fd){
     int encontrado=0;
-    char mensaje_job[MAX_MSG];
 
     for(int x=0;x<MAX_JOBS_ACTIVOS && !encontrado;x++){
         if(job_id==tabla_jobs_activos[x].job_id && tabla_jobs_activos[x].estado_job!=0){
@@ -930,20 +1130,6 @@ void liberar_job(int job_id,int epoll_fd){
 }
 
 
-void eliminar_job(int job_id){
-    for(int x=0; x<MAX_JOBS_ACTIVOS; x++){
-        if(tabla_jobs_activos[x].job_id == job_id && tabla_jobs_activos[x].estado_job != 0){
-            tabla_jobs_activos[x].estado_job = 0;
-            tabla_jobs_activos[x].cantidad_recursos = 0;
-            tabla_jobs_activos[x].job_id=0;
-            printf("[INFO-TABLA JOBS] Job %d eliminado sin mandar releases.\n", job_id);
-            return;
-        }
-    }
-    printf("[ERROR-TABLA JOBS] No se encontró el job %d para eliminar.\n", job_id);
-}
-
-
 int conocer_estado_job(int job_id){
     for(int x=0;x<MAX_JOBS_ACTIVOS;x++){
         if(tabla_jobs_activos[x].job_id==job_id && tabla_jobs_activos[x].estado_job!=0){
@@ -951,17 +1137,6 @@ int conocer_estado_job(int job_id){
         }
     }
     return -1;
-}
-
-void marcar_job_concedido(int job_id){
-    for(int x=0;x<MAX_JOBS_ACTIVOS;x++){
-        if(tabla_jobs_activos[x].estado_job!=0 && tabla_jobs_activos[x].job_id==job_id){
-            tabla_jobs_activos[x].estado_job=2;
-            printf("[INFO-TABLA JOBS] Job %d marcado como CONCEDIDO.\n", job_id);
-            return;
-        }
-    }
-    printf("[ERROR-TABLA JOBS] Job %d inexistente. No se pudo marcar concedido.\n", job_id);
 }
 
 void registrar_recurso_job(int job_id, char* ip, int puerto, char* recurso_name, int amount){

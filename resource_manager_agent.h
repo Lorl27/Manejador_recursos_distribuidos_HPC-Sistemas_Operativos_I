@@ -18,6 +18,7 @@
 #include <netinet/in.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <signal.h>
 
 
 #define MAX_NODOS 50 // maximo de nodos que podemos llegar a conocer (simultaneas)
@@ -68,11 +69,18 @@ typedef struct _SolicitudRespuestaRecurso{
     int es_release; //1: release - 0: reserve
 } SolicitudRespuestaRecurso;
 
+typedef struct _Asignacion {
+    int fd_cliente;
+    int amount;
+    int job_id;
+} Asignacion;
 typedef struct _RecursosLocales{
     char nombre[16];
     int capacidadTotal;
     int cantidadDisponible;
     Cola solicitudesPendientes;
+    int cantidad_asignaciones;
+    Asignacion asignaciones[MAX_PENDING]; //Para saber a quien le prestamos recursos.
 }RecursosLocales;
 
 // USO: Para saber a quien le pedimos què cosa
@@ -86,7 +94,11 @@ typedef struct _RecursoConcedido {
 typedef struct _TablaJobActivos {
     int job_id;
     int estado_job; // 0=libre - 1=solicitando - 2=activo
-    int cantidad_recursos;
+    int cantidad_recursos; //recursos GRANTED exitosos guardados
+    int cantidad_esperados; //recursos pedidos en total en JOB_REQUEST
+    int cantidad_respondidos; //Cuantos GRANTED/DENIED nos llegaron
+    int cantidad_denegados; // si es >0 : job global fallo.
+
     RecursoConcedido recursos[MAX_RECURSOS_POR_JOB]; 
 } TablaJobActivos;
 
@@ -104,6 +116,9 @@ void* copiar_solicitud(void* dato);
 
 //libera la memoria de la solicitud de recurso, destruyendola.
 void destruir_solicitud(void* dato);
+
+//ELimina las solicitudes de la Cola, del fd caido.
+Cola purgar_solicitudes_por_fd(Cola cola, int fd_caido);
 
 //ANCHOR - CREACION SERVIDORES
 
@@ -162,6 +177,12 @@ Si recibe RELEASE:
 */
 void gestionar_recursos_locales(RecursosLocales * recursos, char * comando, int job_id, int amount,int fd_cliente);
 
+//Retorna la cantidad de recursos solicitados en JOB_REQUEST
+int contar_recursos_pedidos_Erlang(char *mensaje_original);
+
+// Limpia todas las reservas (y solicitudes encoladas) asociadas a un socket que se desconectó.
+void limpiar_recursos_por_desconexion(int fd);
+
 //ANCHOR - Manejo de la Tabla de Nodos
 
 // Si encontramos un nodo cuyo tiempo supero los 15s, se elimina de la tabla.
@@ -191,15 +212,9 @@ int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,cha
 //Avisa a los nodos remotos de la liberaciòn.
 void liberar_job(int job_id,int epoll_fd);
 
-//Elimina el job.
-void eliminar_job(int job_id);
-
 //Retorna el estado del job_id 
 // -1 si no lo encuentra.
 int conocer_estado_job(int job_id);
-
-//Actualiza el estado del job
-void marcar_job_concedido(int job_id);
 
 // Registra un nuevo recurso solicitado para un Job en la tabla
 void registrar_recurso_job(int job_id, char* ip, int puerto, char* recurso_name, int amount);
