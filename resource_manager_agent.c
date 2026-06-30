@@ -158,6 +158,7 @@ int crear_servidor_tcp_local(int puerto){
 int crear_socket_broadcast() {
     int sock;
     int broadcastEnable = 1;
+    int opt=1;
 
     //crear socket upd
     if((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
@@ -171,6 +172,15 @@ int crear_socket_broadcast() {
         close(sock);
         exit(EXIT_FAILURE);
     }
+
+    //^ ===== AGREGAR ESTO PARA PERMITIR MÚLTIPLES NODOS EN LOCALHOST
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("[BROADCAST-ERROR] Seteando SO_REUSEADDR.\n");
+    }
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+        perror("[BROADCAST-ERROR] Seteando SO_REUSEPORT.\n");
+    }
+    //^ =========================
 
     // configura la dirección de destino para los envíos
     memset(&srv_mensajeria_broadcast, 0, sizeof(srv_mensajeria_broadcast));
@@ -593,7 +603,7 @@ int validar_mensajes_validos(char * mensaje){
 
     int recibidos = sscanf(mensaje,"%31s",comando);
 
-    if(recibidos!=1){
+    if(recibidos==1){
         //PIDE RECURSOS
         if(strcmp(comando,"RESERVE")==0 ||strcmp(comando,"RELEASE")==0){
             if(sscanf(mensaje,"%*s %d %31s %d",&job_id,recursos_name,&recursos_tam)==3) return 1; // (IGNORADA) JOB_ID RECURSO CANTIDAD

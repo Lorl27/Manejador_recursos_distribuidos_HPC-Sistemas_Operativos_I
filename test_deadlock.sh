@@ -25,6 +25,6 @@ fi
 
 # Ejecuta dos nodos en terminales distintas (ALTERNATIVA - REQUIERE sudo apt install xterm) 
 xterm -hold -title "Nodo A" -e ./agente_recursos 127.0.0.1 8001 9001 "cpu:2 mem:8" &
-xterm -hold -title "Nodo B" -e ./agente_recursos 127.0.0.1 8002 9002 "cpu:2 gpu:1" &
+xterm -hold -title "Nodo B" -e ./agente_recursos 127.0.0.2 8002 9002 "cpu:2 gpu:1" &
 
 echo "Clúster de prueba iniciado."
