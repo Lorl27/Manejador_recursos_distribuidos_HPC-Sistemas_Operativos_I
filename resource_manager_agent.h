@@ -16,9 +16,7 @@
 #include <sys/time.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
-//#include <linux/time.h>
 #include <fcntl.h>
-//#include <asm-generic/socket.h>
 #include <errno.h>
 
 
@@ -57,13 +55,17 @@ typedef struct _SolicitudRecurso {
 //Uso: Para guardar en memoria quièn fue el que pidio originalmente el recurso, luego de pedirle a Erlang el mismo.
 typedef struct _SolicitudRespuestaRecurso{
     int fd_remoto; //socket que se comunica con el otro nodo.
-    int fd_erlang; //a quien hay que darle la respuesta (socket local)
+    int fd_erlang; //a quien hay que darle la respuesta (socket local) ò -1 si es RELEASE
     int job_id;
     int activo; //1: en uso - 0:libre
     //campos para que NO sea bloqueante:
     int conectando;  //1: esperando conexion - 0: ya conectado.
     char recurso_name[16];
     int amount;
+    //PARA RESERVE/RELEASE:
+    char ip[16];
+    int puerto;
+    int es_release; //1: release - 0: reserve
 } SolicitudRespuestaRecurso;
 
 typedef struct _RecursosLocales{
@@ -180,17 +182,16 @@ int buscar_puerto_por_IP(char * ip);
 //ANCHOR -  Solicitud Respuesta Recursos 
 
 //Busca un hueco libre para guardar los datos relacionados.
-void guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,char* recurso_name,int amount);
-
-// Busca el socket de erlang, libera el hueco y devuelve el mismo.
-// devuelve -1 si no lo encuentra.
-int obtener_socket_respuesta(int fd_remoto,int job_id);
+void guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,char* recurso_name,int amount, char* ip, int puerto, int es_release);
 
 //ANCHOR - MANEJO TABLA DE JOB ACTIVOS 
 
 //Libera el job de la tabla de jobs activos, si es que lo encuentra.
 //Avisa a los nodos remotos de la liberaciòn.
-void liberar_job(int job_id);
+void liberar_job(int job_id,int epoll_fd);
+
+//Elimina el job.
+void eliminar_job(int job_id);
 
 //Retorna el estado del job_id 
 // -1 si no lo encuentra.
