@@ -64,3 +64,5 @@ Si un nodo (por ejemplo 192.168.1.2) deja de enviar ```ANNOUNCE```, tras 15 segu
     - Si tenia a un job en la cola: Se da cuenta que el ```Job 1002``` estaba en la cola esperando ese recurso, manda ```GRANTED 1002```  y en la terminal de Erlang recibimos ```JOB_GRANTED 1002```
 NOTA: En caso de que se intente liberar uno ya liberado / no exista el job, Nodo A avisara con un mensaje en pantalla.
 1. Para conocer el estado de un job, en Erlang : ```JOB_STATUS 1002```, El Nodo A informara el estado si es que existe y enviara a Erlang ```JOB_STATUS status```. Si no existe el Nodo A tirara un warning.
+
+>Nota: Testeado en Ubuntu 24.04.2 LTS

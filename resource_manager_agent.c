@@ -20,8 +20,8 @@ TablaJobActivos tabla_jobs_activos[MAX_JOBS_ACTIVOS];
 
 void inicializar_mis_recursos(char * mis_recursos) {
     char copia[256];
-    strncpy(copia, mis_recursos, 255);
-    copia[255] = '\0';
+    strncpy(copia, mis_recursos, sizeof(copia)-1);
+    copia[sizeof(copia)-1] = '\0';
 
     int x=0;
     // Cortamos por espacios
@@ -33,8 +33,8 @@ void inicializar_mis_recursos(char * mis_recursos) {
         
         // El %15[^:] lee todo hasta encontrar los dos puntos ':'
         if(sscanf(token,"%15[^:]:%d",nombre,&capacidad)== 2){
-            strncpy(mi_recurso_local[x].nombre, nombre, 15);
-            mi_recurso_local[x].nombre[15] = '\0';
+            strncpy(mi_recurso_local[x].nombre, nombre, sizeof(mi_recurso_local[x].nombre)-1);
+            mi_recurso_local[x].nombre[sizeof(mi_recurso_local[x].nombre)-1] = '\0';
             mi_recurso_local[x].capacidadTotal = capacidad;
             mi_recurso_local[x].cantidadDisponible = capacidad;
             mi_recurso_local[x].solicitudesPendientes = Cola_crear();
@@ -48,7 +48,7 @@ void inicializar_mis_recursos(char * mis_recursos) {
     // Si alguno de los recursos no se paso, lo inicializamos por defecto en vacio. 
     //usa el valor de x anterior.
     for(;x<3;x++) {
-        strcpy(mi_recurso_local[x].nombre, "");
+        mi_recurso_local[x].nombre[0]='\0';
         mi_recurso_local[x].capacidadTotal = 0;
         mi_recurso_local[x].cantidadDisponible = 0;
         mi_recurso_local[x].solicitudesPendientes = Cola_crear(); 
@@ -717,7 +717,8 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                             }
 
                             char copia_mensaje[MAX_MSG];
-                            strcpy(copia_mensaje,mensaje); //strtok modifica el str.
+                            strncpy(copia_mensaje,mensaje,MAX_MSG-1); //strtok modifica el str.
+                            copia_mensaje[MAX_MSG-1]='\0';
 
                             //Salteamos JOB_REQUEST y JOB_ID
                             char * token= strtok(copia_mensaje," ");
@@ -925,7 +926,8 @@ void gestionar_recursos_locales(RecursosLocales * recurso, char * comando, int j
 int contar_recursos_pedidos_Erlang(char *mensaje_original){
     int cantidad=0;
     char copia[MAX_MSG];
-    strcpy(copia,mensaje_original);
+    strncpy(copia,mensaje_original,MAX_MSG-1);
+    copia[MAX_MSG-1]='\0';
 
     char *token =strtok(copia," "); //salta JOB_REQUEST
     token =strtok(NULL, " "); // salta job_id
@@ -1008,13 +1010,13 @@ void insertar_en_tablaNodos(char * buffer){
 
         if(!existe){
             if(cantidad_nodos<MAX_NODOS){
-                strncpy(tabla_activos[cantidad_nodos].IP,ip_recibida,15);
-                tabla_activos[cantidad_nodos].IP[15]='\0';
+                strncpy(tabla_activos[cantidad_nodos].IP,ip_recibida,sizeof(tabla_activos[cantidad_nodos].IP)-1);
+                tabla_activos[cantidad_nodos].IP[sizeof(tabla_activos[cantidad_nodos].IP)-1]='\0';
 
                 tabla_activos[cantidad_nodos].puerto=puerto_recibido;
 
-                strncpy(tabla_activos[cantidad_nodos].recursos,recursos_recibidos,127);
-                tabla_activos[cantidad_nodos].recursos[127]='\0';
+                strncpy(tabla_activos[cantidad_nodos].recursos,recursos_recibidos,sizeof(tabla_activos[cantidad_nodos].recursos)-1);
+                tabla_activos[cantidad_nodos].recursos[sizeof(tabla_activos[cantidad_nodos].recursos)-1]='\0';
 
                 tabla_activos[cantidad_nodos].timestamp=time(NULL);
 
@@ -1029,7 +1031,8 @@ void insertar_en_tablaNodos(char * buffer){
 
 void enviar_lista_nodos(int fd_erlang){
     char buffer[MAX_MSG];
-    strcpy(buffer, "NODES\n");
+    strncpy(buffer,"NODES\n",MAX_MSG);
+    buffer[MAX_MSG-1]='\0';
 
     for(int x=0;x<cantidad_nodos;x++){
         char nodo[256];
@@ -1067,11 +1070,11 @@ int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,cha
             //guardamos los datos, para luego mandar el RESERVE.
             solicitud_respuesta[x].conectando=1;
             solicitud_respuesta[x].amount=amount;
-            strncpy(solicitud_respuesta[x].recurso_name,recurso_name,15);
-            solicitud_respuesta[x].recurso_name[15]='\0';
+            strncpy(solicitud_respuesta[x].recurso_name,recurso_name,sizeof(solicitud_respuesta[x].recurso_name)-1);
+            solicitud_respuesta[x].recurso_name[sizeof(solicitud_respuesta[x].recurso_name)-1]='\0';
 
-            strncpy(solicitud_respuesta[x].ip,ip,15);
-            solicitud_respuesta[x].ip[15] ='\0';
+            strncpy(solicitud_respuesta[x].ip,ip,sizeof(solicitud_respuesta[x].ip)-1);
+            solicitud_respuesta[x].ip[sizeof(solicitud_respuesta[x].ip)-1] ='\0';
             solicitud_respuesta[x].puerto =puerto;
             solicitud_respuesta[x].es_release=es_release;
 
@@ -1186,13 +1189,13 @@ void registrar_recurso_job(int job_id, char* ip, int puerto, char* recurso_name,
         if(!existe){
             if(r<MAX_RECURSOS_POR_JOB){
                 RecursoConcedido * tabla=&tabla_jobs_activos[indice].recursos[r];
-                strncpy(tabla->ip, ip, 15);
-                tabla->ip[15]='\0';
+                strncpy(tabla->ip, ip, sizeof(tabla->ip)-1);
+                tabla->ip[sizeof(tabla->ip)-1]='\0';
                 
                 tabla->puerto=puerto;
                 
-                strncpy(tabla->recurso_name,recurso_name,15);
-                tabla->recurso_name[15] ='\0';
+                strncpy(tabla->recurso_name,recurso_name,sizeof(tabla->recurso_name)-1);
+                tabla->recurso_name[sizeof(tabla->recurso_name)-1] ='\0';
                 
                 tabla->amount=amount;
                 
