@@ -146,7 +146,7 @@ int crear_conexion_cliente(const char * ip_destino, int puerto_destino);
 //ANCHOR -- Eventos principales
 
 // Envia un anuncio y espera 2s para recibir anuncios de otros nodos ya activos.
-void ejecutar_arranque_inicial(int epoll_fd, int sock_udp_broadcast,char * ip, int puerto_tcp, char * recursos);
+void ejecutar_arranque_inicial(int epoll_fd, int sock_udp_broadcast, int puerto_tcp, char * recursos);
 
 /*
 Inicializa el agente de recursos.
@@ -159,7 +159,7 @@ Crea:
 Ambos servidores TCP escuchan sobre el mismo puerto.
  
 Configura epoll, registra todos los descriptores y envía periódicamente mensajes con el formato:
- ANNOUNCE <IP> <PUERTO> <RECURSOS>
+ ANNOUNCE <PUERTO> <RECURSOS>
  */
 void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, char* mis_recursos);
 
@@ -201,7 +201,7 @@ void limpiar_nodos_caidos();
 
 //Inserta el nodo en la tablaNodos (si es que no existia)
 // SI existia antes, actualizamos timestamp.
-void insertar_en_tablaNodos(char * buffer);
+void insertar_en_tablaNodos(char * buffer, char *ip);
 
 //Envia la lista de nodos a erlang (NODES ip:puerto:recursos;ip..)
 void enviar_lista_nodos(int fd_erlang);

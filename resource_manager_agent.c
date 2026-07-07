@@ -288,7 +288,7 @@ int crear_conexion_cliente(const char * ip_destino, int puerto_destino){
 //* !SECTION
 //*SECTION --- Main eventos ----
 
-void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int puerto_tcp, char * recursos) {
+void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast, int puerto_tcp, char * recursos) {
     char buffer[MAX_MSG];
     struct sockaddr_in origen;
     socklen_t len = sizeof(origen);
@@ -298,8 +298,8 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
 
     printf("[INFO-ARRANQUE] Enviando primer anuncio...\n");
     
-    // anuncio mi IP - Puerto TCP- Mis recursos disponibles
-    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s\n", ip, puerto_tcp, recursos);
+    // anuncio mi Puerto TCP- Mis recursos disponibles
+    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %d %s\n", puerto_tcp, recursos);
     if (sendto(socket_broadcast, mensaje, strlen(mensaje), 0, (struct sockaddr*)&srv_mensajeria_broadcast, sizeof(srv_mensajeria_broadcast)) < 0) {
         perror("[ARRANQUE-ERROR] Error en sendto inicial.");
     }
@@ -313,9 +313,11 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
             int nbytes = recvfrom(socket_broadcast, buffer, MAX_MSG-1, 0, (struct sockaddr*)&origen, &len);
             if (nbytes > 0) {
                 buffer[nbytes] = '\0';
-                printf("[INFO-ARRANQUE] Nodo activo descubierto: %s\n", buffer);
+
+                char * ip_origen=inet_ntoa(origen.sin_addr); //extraemos la IP
+                printf("[INFO-ARRANQUE] Nodo descubierto con IP %s: %s\n",ip_origen,buffer);
                 
-                insertar_en_tablaNodos(buffer);
+                insertar_en_tablaNodos(buffer,ip_origen);
                 
             }
         }
@@ -394,7 +396,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, char* mis_recurs
     }
     
 
-    ejecutar_arranque_inicial(epoll_fd, socket_broadcast, mi_ip_lan, mi_puerto_publico, mis_recursos);
+    ejecutar_arranque_inicial(epoll_fd, socket_broadcast, mi_puerto_publico, mis_recursos);
 
     printf("[Servidor iniciado correctamente.]\n");
     printf("[INFO-SERVIDOR] Iniciando envíos periódicos de ANNOUNCE por broadcast...\n");
@@ -413,7 +415,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, char* mis_recurs
                 read(timer, &expira, sizeof(expira)); // limpiar timer (leyendolo)
 
                 // Armar y mandar el mensaje ANNOUNCE 
-                snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s\n", mi_ip_lan, mi_puerto_publico, mis_recursos);
+                snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %d %s\n", mi_puerto_publico, mis_recursos);
                 sendto(socket_broadcast, mensaje, strlen(mensaje), 0, (struct sockaddr*)&srv_mensajeria_broadcast, sizeof(srv_mensajeria_broadcast));
                 
                 limpiar_nodos_caidos();
@@ -464,9 +466,11 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, char* mis_recurs
                 }
 
                 mensaje[nbytes]='\0';
-                printf("[OTRO NODO - INFO] Se recibio del nodo con IP %s el mensaje: %s.\n", inet_ntoa(cli_name.sin_addr),mensaje);
 
-                insertar_en_tablaNodos(mensaje);
+                char * ip_origen=inet_ntoa(cli_name.sin_addr); //convierte la dir de red en texto.
+                printf("[OTRO NODO - INFO] Se recibio del nodo con IP %s el mensaje: %s.\n", ip_origen,mensaje);
+
+                insertar_en_tablaNodos(mensaje,ip_origen);
             }
             else if (fd==srv_local || fd==srv_public) {
                 // Alguien nuevo se quiere conectar...:
@@ -1041,17 +1045,16 @@ void limpiar_nodos_caidos(){
     }
 }
 
-void insertar_en_tablaNodos(char * buffer){
+void insertar_en_tablaNodos(char * buffer, char * ip_recibida){
     char comando[16];
-    char ip_recibida[16];
     int puerto_recibido;
     char recursos_recibidos[128] = "";
 
-    //lee hasta el primer espacio (comando - puerto - ip - lee el resto :recursos)
-    int recibidos = sscanf(buffer,"%15s %15s %d %127[^\n]",comando,ip_recibida,&puerto_recibido,recursos_recibidos);
+    //lee hasta el primer espacio (comando - puerto - lee el resto :recursos)
+    int recibidos = sscanf(buffer,"%15s %d %127[^\n]",comando,&puerto_recibido,recursos_recibidos);
 
     //Verificacion ANUNCIAMIENTO vàlida.
-    if(recibidos>=3 && strcmp(comando,"ANNOUNCE")==0){
+    if(recibidos>=2 && strcmp(comando,"ANNOUNCE")==0){
 
         int existe=0;
 
