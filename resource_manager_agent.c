@@ -1,6 +1,7 @@
 #include "resource_manager_agent.h"
 
-//* ----- Variables globales para el manejo de mensajes, recursos y nodos. -----
+//*  
+//*SECTION ----- Variables globales para el manejo de mensajes, recursos y nodos. -----
 
 char mensaje[MAX_MSG];
 struct sockaddr_in srv_mensajeria_broadcast;
@@ -13,10 +14,9 @@ RecursosLocales mi_recurso_local[3]; //cpu - gpu - mem
 SolicitudRespuestaRecurso solicitud_respuesta[MAX_PENDING];
 
 TablaJobActivos tabla_jobs_activos[MAX_JOBS_ACTIVOS];
+//* !SECTION -------------------------------------------
 
-//*-------------------------------------------
-
-//* --- INICIALIZACIÒN ---
+//*SECTION --- INICIALIZACIÒN ---
 
 void inicializar_mis_recursos(char * mis_recursos) {
     char copia[256];
@@ -55,8 +55,8 @@ void inicializar_mis_recursos(char * mis_recursos) {
     }
 }
 
-
-//*  -- FUNCIONES AUXILIARES COLA --
+//* !SECTION
+//*SECTION  -- FUNCIONES AUXILIARES COLA --
 
 void* copiar_solicitud(void* dato) {
     SolicitudRecurso * original=(SolicitudRecurso*) dato;
@@ -107,7 +107,8 @@ Cola purgar_solicitudes_por_fd(Cola cola, int fd_caido){
     return cola;
 }
 
-//* --- CREACION DE SERVIDORES ---
+//* !SECTION
+//*SECTION --- CREACION DE SERVIDORES ---
 
 int crear_servidor_tcp_publico(int puerto){
     int sock_srv;
@@ -189,7 +190,8 @@ int crear_servidor_tcp_local(int puerto){
     return sock_srv;
 }
 
-//* --- CREACION DE SOCKETS ----
+//* !SECTION
+//*SECTION --- CREACION DE SOCKETS ----
 
 int crear_socket_broadcast() {
     int sock;
@@ -281,7 +283,8 @@ int crear_conexion_cliente(const char * ip_destino, int puerto_destino){
     return sock;
 }
 
-//* --- Main eventos ----
+//* !SECTION
+//*SECTION --- Main eventos ----
 
 void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int puerto_tcp, char * recursos) {
     char buffer[MAX_MSG];
@@ -368,7 +371,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     ev.events = EPOLLIN;
     ev.data.fd = timer; 
     if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timer, &ev)==-1){
-            perror("[ERROR] fallo epoll_ctl ADD timer.\n");
+        perror("[ERROR] fallo epoll_ctl ADD timer.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -412,6 +415,43 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                 sendto(socket_broadcast, mensaje, strlen(mensaje), 0, (struct sockaddr*)&srv_mensajeria_broadcast, sizeof(srv_mensajeria_broadcast));
                 
                 limpiar_nodos_caidos();
+
+                //Validar time-outs:
+                time_t ahora =time(NULL);
+                for(int y =0;y<MAX_PENDING;y++){
+                    // Si está activo, no es un release, y pasaron más de TIMEOUT_JOB_SEG seg
+                    if(solicitud_respuesta[y].activo && !solicitud_respuesta[y].es_release && (ahora-solicitud_respuesta[y].timestamp)>TIMEOUT_JOB_SEG){
+                        int job_id =solicitud_respuesta[y].job_id;
+                        int fd_erlang =solicitud_respuesta[y].fd_erlang;
+
+                        printf("[INFO-TIMEOUT] Timeout alcanzado para el job %d en recurso %s.\n", job_id, solicitud_respuesta[y].recurso_name);
+
+                        // Cerramos y limpiamos de epoll todas las solicitudes pendientes asociadas a este job_id
+                        for(int z =0;z< MAX_PENDING;z++){
+                            if(solicitud_respuesta[z].activo && solicitud_respuesta[z].job_id == job_id && !solicitud_respuesta[z].es_release){
+                                if(solicitud_respuesta[z].fd_remoto != -1){
+                                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, solicitud_respuesta[z].fd_remoto, &ev);
+                                    close(solicitud_respuesta[z].fd_remoto);
+                                }
+
+                                solicitud_respuesta[z].activo = 0;
+                            }
+                        }
+
+                        liberar_job(job_id, epoll_fd);
+
+
+                        // Avisamos a Erlang 
+                        if(fd_erlang != -1){
+                            char msg_timeout[32];
+                            snprintf(msg_timeout, sizeof(msg_timeout), "JOB_TIMEOUT %d\n", job_id);
+                            ssize_t enviados=send(fd_erlang, msg_timeout, strlen(msg_timeout), 0);
+                            if(enviados==-1) perror("[ERROR-TIMEOUT] Error en send() de JOB_TIMEOUT");
+                        }
+                    }
+                }
+             
+
             }
             else if(fd==socket_broadcast){ //llego algo de otro nodo.
                 cli_size=sizeof(cli_name);
@@ -545,24 +585,22 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                             printf("[INFO-SERVIDOR] Se recibio: %s para el job %d. \n",comando,job_id);
                             
                             //Buscar datos originales de la solicud:
-                            int encontrado=0;
                             SolicitudRespuestaRecurso *soli=NULL;
-                            for(int y=0;y<MAX_PENDING && !encontrado;y++){
+                            for(int y=0;y<MAX_PENDING;y++){
                                 int solicitud_act=solicitud_respuesta[y].activo && solicitud_respuesta[y].fd_remoto==fd && solicitud_respuesta[y].job_id==job_id;
                                 if(solicitud_act){
                                     soli=&solicitud_respuesta[y];
-                                    encontrado=1;
+                                    break;
                                 }
                             }
 
                             if(soli!=NULL){
                                 //Buscamos el job en la tabla de Jobs activos:
-                                int encontrado=0;
                                 int indice_job=-1;
-                                for(int y=0;y<MAX_JOBS_ACTIVOS && !encontrado;y++){
+                                for(int y=0;y<MAX_JOBS_ACTIVOS;y++){
                                     if(tabla_jobs_activos[y].estado_job!=0 && tabla_jobs_activos[y].job_id==job_id){
                                         indice_job=y;
-                                        encontrado=1;
+                                        break;
                                     }
                                 }
                                 
@@ -642,11 +680,10 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                         else if(strcmp(comando,"RESERVE")==0||strcmp(comando,"RELEASE")==0){
                             RecursosLocales * recurso=NULL;
 
-                            int encontrado=0;
-                            for(int x=0;x<3 && !encontrado;x++){
+                            for(int x=0;x<3;x++){
                                 if(strcmp(recursos_name,mi_recurso_local[x].nombre)==0){
                                     recurso=&mi_recurso_local[x];
-                                    encontrado=1;
+                                    break;
                                 }
                             }
 
@@ -666,10 +703,9 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                             sscanf(mensaje,"%*s %d",&job_id); //obtener job_id
 
                             int job_duplicado = 0;
-                            for(int x=0;x<MAX_JOBS_ACTIVOS;x++){
+                            for(int x=0;x<MAX_JOBS_ACTIVOS && !job_duplicado;x++){
                                 if(tabla_jobs_activos[x].estado_job!= 0 && tabla_jobs_activos[x].job_id==job_id){
                                     job_duplicado = 1;
-                                    break;
                                 }
                             }
                             
@@ -692,18 +728,14 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
 
                             //Inicializar el job en la tabla:
                             int indice_job=-1;
-                            int found=0;
-                            for(int x=0;x<MAX_JOBS_ACTIVOS && !found;x++){
+                            for(int x=0;x<MAX_JOBS_ACTIVOS;x++){
                                 if(tabla_jobs_activos[x].estado_job==0){
                                     indice_job=x;
                                     memset(&tabla_jobs_activos[x], 0, sizeof(TablaJobActivos));
                                     tabla_jobs_activos[x].job_id = job_id;
                                     tabla_jobs_activos[x].estado_job = 1;
                                     tabla_jobs_activos[x].cantidad_esperados = cantidad_pedida;
-                                    tabla_jobs_activos[x].cantidad_respondidos = 0;
-                                    tabla_jobs_activos[x].cantidad_denegados = 0;
-                                    tabla_jobs_activos[x].cantidad_recursos = 0;
-                                    found=1;
+                                    break;
                                 }
                             }
 
@@ -819,8 +851,8 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     }
 }
 
-
-//* --- Validaciones y gestiones ----
+//* !SECTION
+//*SECTION --- Validaciones y gestiones ----
 
 int validar_mensajes_validos(char * mensaje){
     char comando[32];
@@ -970,7 +1002,8 @@ void limpiar_recursos_por_desconexion(int fd_caido) {
     }
 }
 
-//* --- MANEJO TABLA NODOS ----
+//* !SECTION
+//*SECTION --- MANEJO TABLA NODOS ----
 
 void limpiar_nodos_caidos(){
     for(int x=0;x<cantidad_nodos;x++){
@@ -1057,7 +1090,8 @@ int buscar_puerto_por_IP(char * ip){
     return -1;
 }
 
-//* ----  Solicitud Respuesta Recursos  ----
+//* !SECTION
+//*SECTION ----  Solicitud Respuesta Recursos  ----
 
 int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,char* recurso_name,int amount, char* ip, int puerto, int es_release){
     for(int x=0;x<MAX_PENDING;x++){
@@ -1077,6 +1111,7 @@ int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,cha
             solicitud_respuesta[x].ip[sizeof(solicitud_respuesta[x].ip)-1] ='\0';
             solicitud_respuesta[x].puerto =puerto;
             solicitud_respuesta[x].es_release=es_release;
+            solicitud_respuesta[x].timestamp = time(NULL); //Registramos tiempo inicio (Hora actual)
 
             solicitud_respuesta[x].activo=1;
 
@@ -1088,7 +1123,8 @@ int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,cha
     return 0;
 }
 
-//* -- MANEJO TABLA DE JOB ACTIVOS ---
+//* !SECTION
+//*SECTION -- MANEJO TABLA DE JOB ACTIVOS ---
 
 void liberar_job(int job_id,int epoll_fd){
     int encontrado=0;
@@ -1122,9 +1158,7 @@ void liberar_job(int job_id,int epoll_fd){
             }
 
             //Ahora, liberamos en la tabla nuestra:
-            tabla_jobs_activos[x].estado_job=0;
-            tabla_jobs_activos[x].cantidad_recursos=0;
-            tabla_jobs_activos[x].job_id=0;
+            memset(&tabla_jobs_activos[x], 0, sizeof(TablaJobActivos));
             printf("[INFO - TABLA JOBS] Se ha liberado el job %d.\n",job_id);
         }
     }
@@ -1144,27 +1178,24 @@ int conocer_estado_job(int job_id){
 
 void registrar_recurso_job(int job_id, char* ip, int puerto, char* recurso_name, int amount){
     int indice=-1;
-    int encontrado=0;
 
-    for(int x=0;x<MAX_JOBS_ACTIVOS && !encontrado;x++){
+    for(int x=0;x<MAX_JOBS_ACTIVOS;x++){
         if(tabla_jobs_activos[x].estado_job!=0 && tabla_jobs_activos[x].job_id==job_id){
             indice=x;
-            encontrado=1;
+            break;
         }
     }
 
     //si no existe... : lo creamos
     if(indice==-1){
-        encontrado=0;
-        for(int x=0;x<MAX_JOBS_ACTIVOS && !encontrado;x++){
+        for(int x=0;x<MAX_JOBS_ACTIVOS;x++){
             if(tabla_jobs_activos[x].estado_job==0){
                 indice=x;
                 //Limpiamos
                 memset(&tabla_jobs_activos[x],0,sizeof(TablaJobActivos)); // Rellena el bloque con 0 (sobreescribe los viejos)
                 tabla_jobs_activos[x].job_id=job_id;
                 tabla_jobs_activos[x].estado_job=1;
-                tabla_jobs_activos[x].cantidad_recursos=0;
-                encontrado=1;
+                break;
             }
         }   
     }
@@ -1210,3 +1241,5 @@ void registrar_recurso_job(int job_id, char* ip, int puerto, char* recurso_name,
     }
     
 }
+
+//* !SECTION

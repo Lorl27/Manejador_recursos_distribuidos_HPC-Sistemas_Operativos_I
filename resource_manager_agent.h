@@ -30,6 +30,7 @@
 
 #define INTERVALO_SEG 3
 #define TIEMPO_CAIDO 15
+#define TIMEOUT_JOB_SEG 10  //Timeout para eliminar reservas que nunca se completen.
 
 #define BROADCAST_IP "255.255.255.255"
 #define LOCAL_IP "127.0.0.1" 
@@ -67,6 +68,7 @@ typedef struct _SolicitudRespuestaRecurso{
     char ip[16];
     int puerto;
     int es_release; //1: release - 0: reserve
+    time_t timestamp;
 } SolicitudRespuestaRecurso;
 
 typedef struct _Asignacion {
