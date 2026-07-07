@@ -61,9 +61,11 @@ void inicializar_mis_recursos(char * mis_recursos) {
 void* copiar_solicitud(void* dato) {
     SolicitudRecurso * original=(SolicitudRecurso*) dato;
     SolicitudRecurso * copia=malloc(sizeof(SolicitudRecurso));
-    copia->job_id=original->job_id;
-    copia->amount=original->amount;
-    copia->fd_origen=original->fd_origen;
+    if(copia!=NULL){
+        copia->job_id=original->job_id;
+        copia->amount=original->amount;
+        copia->fd_origen=original->fd_origen;
+    }
 
     return copia;
 }
@@ -116,13 +118,13 @@ int crear_servidor_tcp_publico(int puerto){
     int opt = 1;
  
     if((sock_srv=socket(AF_INET, SOCK_STREAM,0))<0) {
-        perror("[SERVER TCP PUBLICO-ERROR] Fallo la creacion del socket.\n");
+        perror("[SERVER TCP PUBLICO-ERROR] Fallo la creacion del socket.");
         exit(EXIT_FAILURE);
     }
 
     //SO_REUSEADDR  nos permite reutilizar el puerto inmediatamente por si creashea/reinicia
     if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
-        perror("[SERVER TCP PUBLICO-ERROR] Fallo el setsockopt.\n");
+        perror("[SERVER TCP PUBLICO-ERROR] Fallo el setsockopt.");
         exit(EXIT_FAILURE);
     }
 
@@ -135,13 +137,13 @@ int crear_servidor_tcp_publico(int puerto){
     srv_name.sin_port = htons(puerto);
 
     if(bind(sock_srv, (struct sockaddr*)&srv_name, sizeof(srv_name)) < 0) {
-        perror("[SERVER TCP PUBLICO-ERROR] Fallo el bind.\n");
+        perror("[SERVER TCP PUBLICO-ERROR] Fallo el bind.");
         exit(EXIT_FAILURE);
     }
 
     //para recibir maximo que pueda
     if(listen(sock_srv, SOMAXCONN) < 0) {
-        perror("[SERVER TCP PUBLICO-ERROR] Fallo el listen.\n");
+        perror("[SERVER TCP PUBLICO-ERROR] Fallo el listen.");
         exit(EXIT_FAILURE);
     }
     
@@ -156,13 +158,13 @@ int crear_servidor_tcp_local(int puerto){
     int opt = 1;
  
     if((sock_srv=socket(AF_INET, SOCK_STREAM,0))<0) {
-        perror("[SERVER TCP LOCAL-ERROR] Fallo en la creacion del socket.\n");
+        perror("[SERVER TCP LOCAL-ERROR] Fallo en la creacion del socket.");
         exit(EXIT_FAILURE);
     }
 
     //SO_REUSEADOR nos permite reutilizar el puerto inmediatamente por si creashea/reinicia
     if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
-        perror("[SERVER TCP LOCAL-ERROR] Fallo el setsockopt.\n");
+        perror("[SERVER TCP LOCAL-ERROR] Fallo el setsockopt.");
         exit(EXIT_FAILURE);
     }
 
@@ -175,13 +177,13 @@ int crear_servidor_tcp_local(int puerto){
     srv_name.sin_port = htons(puerto);
 
     if(bind(sock_srv, (struct sockaddr*)&srv_name, sizeof(srv_name)) < 0) {
-        perror("[SERVER TCP LOCAL-ERROR] Fallo el bind.\n");
+        perror("[SERVER TCP LOCAL-ERROR] Fallo el bind.");
         exit(EXIT_FAILURE);
     }
 
     //para ecibir maximo que pueda
     if(listen(sock_srv, SOMAXCONN) < 0) {
-        perror("[SERVER TCP LOCAL-ERROR] Fallo el listen.\n");
+        perror("[SERVER TCP LOCAL-ERROR] Fallo el listen.");
         exit(EXIT_FAILURE);
     }
     
@@ -200,23 +202,23 @@ int crear_socket_broadcast() {
 
     //crear socket upd
     if((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        perror("[BROADCAST-ERROR] Creando el socket UDP.\n");
+        perror("[BROADCAST-ERROR] Creando el socket UDP.");
         exit(EXIT_FAILURE);
     }
 
     //hacerlo broadcast
     if(setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable)) < 0) {
-        perror("[BROADCAST-ERROR] Seteando el broadcast.\n");
+        perror("[BROADCAST-ERROR] Seteando el broadcast.");
         close(sock);
         exit(EXIT_FAILURE);
     }
 
     // Permite MÚLTIPLES NODOS EN LOCALHOST
     if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("[BROADCAST-ERROR] Seteando SO_REUSEADDR.\n");
+        perror("[BROADCAST-ERROR] Seteando SO_REUSEADDR.");
     }
     if(setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
-        perror("[BROADCAST-ERROR] Seteando SO_REUSEPORT.\n");
+        perror("[BROADCAST-ERROR] Seteando SO_REUSEPORT.");
     }
     
 
@@ -234,7 +236,7 @@ int crear_socket_broadcast() {
     recvAddr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if(bind(sock, (struct sockaddr*)&recvAddr, sizeof(recvAddr)) < 0) {
-        perror("[BROADCAST-ERROR] Error en el bind.\n");
+        perror("[BROADCAST-ERROR] Error en el bind.");
         close(sock);
         exit(EXIT_FAILURE);
     }
@@ -299,7 +301,7 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
     // anuncio mi IP - Puerto TCP- Mis recursos disponibles
     snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %s %d %s\n", ip, puerto_tcp, recursos);
     if (sendto(socket_broadcast, mensaje, strlen(mensaje), 0, (struct sockaddr*)&srv_mensajeria_broadcast, sizeof(srv_mensajeria_broadcast)) < 0) {
-        perror("[ARRANQUE-ERROR] Error en sendto inicial.\n");
+        perror("[ARRANQUE-ERROR] Error en sendto inicial.");
     }
 
     printf("[INFO-ARRANQUE] Esperando 2 segundos para descubrir nodos...\n");
@@ -339,7 +341,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     //tfd_nonblock: operaciones no bloqueantes
     int timer = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     if (timer == -1) {
-        perror("[ERROR] Fallo timerfd_create.\n");
+        perror("[ERROR] Fallo timerfd_create.");
         exit(EXIT_FAILURE);
     }
 
@@ -353,7 +355,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     //crear epoll
     int epoll_fd = epoll_create1(0);
     if (epoll_fd == -1) {
-        perror("[ERROR] Fallo epoll_create1.\n");
+        perror("[ERROR] Fallo epoll_create1.");
         exit(EXIT_FAILURE);
     }
 
@@ -363,7 +365,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     ev.events = EPOLLIN;
     ev.data.fd = socket_broadcast; 
     if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, socket_broadcast, &ev)==-1){
-        perror("[ERROR] Fallo epoll_ctl ADD socket broadcast.\n");
+        perror("[ERROR] Fallo epoll_ctl ADD socket broadcast.");
         exit(EXIT_FAILURE);
     }
 
@@ -371,7 +373,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     ev.events = EPOLLIN;
     ev.data.fd = timer; 
     if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, timer, &ev)==-1){
-        perror("[ERROR] fallo epoll_ctl ADD timer.\n");
+        perror("[ERROR] fallo epoll_ctl ADD timer.");
         exit(EXIT_FAILURE);
     }
 
@@ -379,7 +381,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     ev.events = EPOLLIN;
     ev.data.fd = srv_public; 
     if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, srv_public, &ev)==-1){
-        perror("[ERROR] fallo epoll_ctl ADD srv public.\n");
+        perror("[ERROR] fallo epoll_ctl ADD srv public.");
         exit(EXIT_FAILURE);
     }
 
@@ -387,7 +389,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     ev.events = EPOLLIN;
     ev.data.fd = srv_local; 
     if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, srv_local, &ev)==-1){
-        perror("[ERROR] fallo epoll_ctl ADD srv local.\n");
+        perror("[ERROR] fallo epoll_ctl ADD srv local.");
         exit(EXIT_FAILURE);
     }
     
@@ -400,7 +402,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
     while (1) {
         int n = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
         if (n < 0) {
-            perror("[SERVIDOR-ERROR] fallo epoll_wait.\n");
+            perror("[SERVIDOR-ERROR] fallo epoll_wait.");
             exit(EXIT_FAILURE);
         }
 
@@ -430,7 +432,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                         for(int z =0;z< MAX_PENDING;z++){
                             if(solicitud_respuesta[z].activo && solicitud_respuesta[z].job_id == job_id && !solicitud_respuesta[z].es_release){
                                 if(solicitud_respuesta[z].fd_remoto != -1){
-                                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, solicitud_respuesta[z].fd_remoto, &ev);
+                                    if(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, solicitud_respuesta[z].fd_remoto, &ev)==-1)perror("[EPOLL-ERROR] EPOLL_CTL_DEL");
                                     close(solicitud_respuesta[z].fd_remoto);
                                 }
 
@@ -457,7 +459,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                 cli_size=sizeof(cli_name);
                 nbytes = recvfrom(socket_broadcast, mensaje, MAX_MSG-1, 0, (struct sockaddr *) &cli_name, &cli_size);  //donde recibo info.
                 if(nbytes < 0) {
-                    perror("[OTRO NODO - ERROR] Falló el recvfrom en broadcast.\n");
+                    perror("[OTRO NODO - ERROR] Falló el recvfrom en broadcast.");
                     continue; //no bloqueante si falla.
                 }
 
@@ -471,7 +473,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                 cli_size=sizeof(cli_name);
                 int nuevo_cli = accept(fd, (struct sockaddr *) &cli_name, &cli_size);
                 if (nuevo_cli < 0) {
-                    perror("[SERVIDOR-ERROR] fallo accept cliente nuevo.\n");
+                    perror("[SERVIDOR-ERROR] fallo accept cliente nuevo.");
                     continue; //no bloqueante si falla.
                 }
 
@@ -480,7 +482,12 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                 // Registrar cliente en epoll
                 ev.events = EPOLLIN;
                 ev.data.fd = nuevo_cli;
-                epoll_ctl(epoll_fd, EPOLL_CTL_ADD, nuevo_cli, &ev);
+                if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, nuevo_cli, &ev)==-1){
+                    perror("[EPOLL-ERROR] No se pudo agregar cliente al epoll");
+                    close(nuevo_cli);
+                    continue;
+                }
+
             }
             else {
                 uint32_t eventos= events[i].events;
@@ -511,7 +518,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                                     if(enviados==-1) perror("[CLIENTE-ERROR] Error en send() de DENIED");
                                 }
 
-                                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+                                if(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev)==-1) perror("[EPOLL-ERROR] EPOLL_CTL_DEL");
                                 close(fd);
                                 solicitud_respuesta[x].activo=0;
                             }
@@ -524,7 +531,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                                     if(enviados==-1) perror("[CLIENTE-ERROR] Error en send() de RELEASE");
                                         
                                     // Cerramos el socket y liberamos el hueco, ya terminamos el proceso.
-                                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+                                    if(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev)==-1)perror("[EPOLL-ERROR] EPOLL_CTL_DEL");
                                     close(fd);
                                     solicitud_respuesta[x].activo = 0;
                                 }
@@ -543,7 +550,12 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                                     struct epoll_event ev_update;
                                     ev_update.events = EPOLLIN;
                                     ev_update.data.fd = fd;
-                                    epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev_update);
+                                    if(epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev_update)==-1){
+                                        perror("[EPOLL-ERROR] EPOLL_CTL_MOD");
+                                        close(fd);
+                                        solicitud_respuesta[x].activo = 0;
+                                        continue;
+                                    }
                                 }
                             }
                             procesandose_conexion=1;
@@ -559,7 +571,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                     if(nbytes <= 0) {
                         printf("[INFO-SERVIDOR] Cliente  %d desconectado.\n", fd);
                         limpiar_recursos_por_desconexion(fd);
-                        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+                        if(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev)==-1)perror("[EPOLL-ERROR] EPOLL_CTL_DEL");
                         close(fd);
                     } 
                     else{
@@ -651,11 +663,16 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                                         int fd_compensacion = crear_conexion_cliente(soli->ip, soli->puerto);
                                         if(fd_compensacion != -1){
                                             // No hay fd_erlang que avisar, así que pasamos -1
-                                            if(guardar_datos_solicitud_respuesta(fd_compensacion, -1, job_id, soli->recurso_name, soli->amount, soli->ip, soli->puerto, 1)){
+                                            int indice=guardar_datos_solicitud_respuesta(fd_compensacion, -1, job_id, soli->recurso_name, soli->amount, soli->ip, soli->puerto, 1);
+                                            if(indice!=-1){
                                                 struct epoll_event ev_compensacion;
                                                 ev_compensacion.events = EPOLLOUT; // Queremos saber cuándo conecta para mandar el RELEASE
                                                 ev_compensacion.data.fd = fd_compensacion;
-                                                epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd_compensacion, &ev_compensacion);
+                                                if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd_compensacion, &ev_compensacion)==-1){
+                                                    perror("[EPOLL-ERROR] EPOLL_CTL_ADD");
+                                                    close(fd_compensacion);
+                                                    solicitud_respuesta[indice].activo=0;
+                                                }
                                             }
                                             else{
                                                 printf("[ERROR-RECUPERACION] No hay hueco en solicitudes pendientes para enviar el RELEASE compensatorio.\n");
@@ -672,7 +689,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                             }
 
                             //termino la transaccion. cerramos socket y sacamos de epoll.
-                            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+                            if(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev)==-1) perror("[EPOLL-ERROR] EPOLL_CTL_DEL");
                             close(fd);
                         } 
 
@@ -770,12 +787,18 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_lo
                                         int fd_remoto=crear_conexion_cliente(ip_destino,puerto_destino);
                                         
                                         if(fd_remoto!=-1){
-                                            if(guardar_datos_solicitud_respuesta(fd_remoto,fd,job_id,recursos_name,recursos_tam,ip_destino,puerto_destino,0)){
+                                            int indice=guardar_datos_solicitud_respuesta(fd_remoto,fd,job_id,recursos_name,recursos_tam,ip_destino,puerto_destino,0);
+                                            if(indice!=-1){
                                                 //lo agregamos al epoll, para que nos avise(escuchar) cuando respondan GRANTED y, ademàs EPOLLOUT para saber cuadno conecto.
                                                 struct epoll_event ev_remoto;
                                                 ev_remoto.events=EPOLLIN|EPOLLOUT;
                                                 ev_remoto.data.fd=fd_remoto;
-                                                epoll_ctl(epoll_fd,EPOLL_CTL_ADD,fd_remoto,&ev_remoto);
+                                                if(epoll_ctl(epoll_fd,EPOLL_CTL_ADD,fd_remoto,&ev_remoto)==-1){
+                                                    perror("[EPOLL-ERROR] EPOLL_CTL_ADD");
+                                                    close(fd_remoto);
+                                                    todos_exitosos = 0;
+                                                    solicitud_respuesta[indice].activo=0;
+                                                }
                                             }else{
                                                 //NO hay hueco.
                                                 printf("[WARNING] No hay hueco en solicitudes pendientes para %s.\n", recursos_name);
@@ -933,6 +956,7 @@ void gestionar_recursos_locales(RecursosLocales * recurso, char * comando, int j
     }
     else if(strcmp(comando,"RELEASE")==0){
         recurso->cantidadDisponible+=amount;
+        if(recurso->cantidadDisponible>recurso->capacidadTotal) recurso->cantidadDisponible=recurso->capacidadTotal;
         printf("[INFO-COLA] Liberados %d de %s. Disponible actual: %d\n", amount, recurso->nombre, recurso->cantidadDisponible);
         
         int exigencia_mayor=0;
@@ -1096,7 +1120,8 @@ int buscar_puerto_por_IP(char * ip){
 int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,char* recurso_name,int amount, char* ip, int puerto, int es_release){
     for(int x=0;x<MAX_PENDING;x++){
         if(!solicitud_respuesta[x].activo){
-            
+            memset(&solicitud_respuesta[x], 0, sizeof(SolicitudRespuestaRecurso));
+
             solicitud_respuesta[x].fd_erlang=fd_erlang;
             solicitud_respuesta[x].fd_remoto=fd_remoto;
             solicitud_respuesta[x].job_id=job_id;
@@ -1116,11 +1141,11 @@ int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,cha
             solicitud_respuesta[x].activo=1;
 
             printf("[SOLICITUD RESPUESTA] Se registro la relacion fd_remoto %d => fd_erlang %d con job_id %d.\n",fd_remoto,fd_erlang,job_id);
-            return 1;
+            return x;
         }
     }
     printf("[SOLICITUD RESPUESTA ERROR] No se pudo guardar la relacion para jod_id %d, debido a que se encuentra llena la capacidad de solicitudes.\n",job_id);
-    return 0;
+    return -1;
 }
 
 //* !SECTION
@@ -1144,13 +1169,18 @@ void liberar_job(int job_id,int epoll_fd){
 
                 if(fd_remoto!=-1){
                     //lo guardamos con -1, ya que no hace falta una rta a Erlang por esto.
-                    guardar_datos_solicitud_respuesta(fd_remoto, -1, job_id, recurso_name, cantidad, ip, puerto, 1);
-                    
-                    // Lo agregamos al epoll para que nos avise cuando conecte
-                    struct epoll_event ev_remoto;
-                    ev_remoto.events = EPOLLOUT; // Solo queremos saber cuando conecta
-                    ev_remoto.data.fd = fd_remoto;
-                    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd_remoto, &ev_remoto);
+                    int indice=guardar_datos_solicitud_respuesta(fd_remoto, -1, job_id, recurso_name, cantidad, ip, puerto, 1);
+                    if(indice!=-1){
+                        // Lo agregamos al epoll para que nos avise cuando conecte
+                        struct epoll_event ev_remoto;
+                        ev_remoto.events = EPOLLOUT; // Solo queremos saber cuando conecta
+                        ev_remoto.data.fd = fd_remoto;
+                        if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd_remoto, &ev_remoto)==-1){
+                            perror("[EPOLL-ERROR] No se pudo agregar RELEASE al epoll.");
+                            close(fd_remoto);
+                            solicitud_respuesta[indice].activo=0;
+                        }
+                    }else close(fd_remoto); //Estaba lleno.
                 }else{
                     printf("[WARNING] No se pudo contactar a %s:%d para liberar el recurso %s.\n", ip, puerto, recurso_name);
                 }

@@ -205,7 +205,7 @@ int buscar_puerto_por_IP(char * ip);
 //ANCHOR -  Solicitud Respuesta Recursos 
 
 //Busca un hueco libre para guardar los datos relacionados.
-//Devuelve 1 si tiene exito, 0 si no (estaba lleno).
+//Devuelve el indice si tiene exito, -1 si no (estaba lleno).
 int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,char* recurso_name,int amount, char* ip, int puerto, int es_release);
 
 //ANCHOR - MANEJO TABLA DE JOB ACTIVOS 

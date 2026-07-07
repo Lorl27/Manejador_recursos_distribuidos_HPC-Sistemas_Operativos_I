@@ -23,6 +23,7 @@ Cola  Encolar(Cola cola, void * elemento, FuncionCopia copy){
     if (cola == NULL) return NULL;
 
     GNode * nuevoNodo=malloc(sizeof(GNode));
+    if(nuevoNodo==NULL) return cola;
     nuevoNodo->dato=copy(elemento);
     nuevoNodo->sig=NULL;
 
