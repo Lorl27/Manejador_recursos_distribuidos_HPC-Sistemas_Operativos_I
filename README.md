@@ -20,14 +20,19 @@ make
 ```
 
 ## Ejecuciòn
-Requiere la IP de escucha - puerto pùblico - puerto local para Erlang y, una cadena con los recursos locales disponibles.
+Requiere:
+- ```IP:``` Es la IP pública del nodo
+- ```PUERTO:``` Es el puerto TCP utilizado simultáneamente para:
+  - Comunicación entre agentes (Mediante socket asociado a IP Pública del nodo)
+  - Comunicación local exclusiva con Erlang (Mediante socket asociado a IP_LOCAL = 127.0.0.1).
+- ```RECURSOS:``` Una cadena de texto con los recursos locales disponibles.
 ```console
-./agente_recursos <IP> <PUERTO_PUBLICO> <PUERTO_LOCAL_ERLANG> "<RECURSOS>"
+./agente_recursos <IP> <PUERTO>  "<RECURSOS>"
 ```
 
 #### Ejemplo de ejecuciòn:
 ```console
-./agente_recursos 192.168.1.50 8100 9000 "cpu:4 mem:8192 gpu:1"
+./agente_recursos 192.168.1.50 8100 "cpu:4 mem:8192 gpu:1"
 ```
 
 Al ejecutarlo, veràs en la consola: ```
@@ -55,8 +60,12 @@ Al ejecutarlo, veràs en la consola: ```
 Si un nodo (por ejemplo 192.168.1.2) deja de enviar ```ANNOUNCE```, tras 15 segundos se considerará caído y se eliminará de la TablaNodos.
 
 ## Ejecucion para testeo ràpida:
+Nodo A: ```nc 127.0.0.1 8001```
+Nodo B: ```nc 127.0.0.1 8002```
+
+## Resultado esperado:
 1. Ejecutar en una terminal: ```./test_deadlock.sh ```. Se abriran 2 ventanas (Nodo A y Nodo B), veràs el arranque inicial en ambos y como estàn en localhost se iràn pasando los nodos entre sì.
-2. Luego de eso ejecutar en otra terminal ```nc 127.0.0.1 9001```, simulara ser Erlang.
+2. Luego de eso ejecutar en otra terminal ```nc 127.0.0.1 8001```, simulara ser Erlang.
 3. En la terminal de Erlang, escribir ```GET NODES```, aparecera la lista de nodos activos. Nodo A comunicarà que recibio el comando y, le envio la lista a Erlang.
 4. En la terminal de Erlang, escribir ```JOB_REQUEST 1001 @127.0.0.2:gpu:1```. Nodo A procesa el comando, busca en la tabla la IP y, lanza la conexiòn al puerto del Nodo B (Envia ```RESERVE 1001 gpu 1```). El Nodo B recibe el ```RESERVE```, verifica si tiene la capacidad del recurso y envia (en caso afirmativo: ```GRANTED 1001``` - En caso negativo: ```DENIED 1001```). Luego, en la terminal de Erlang recibiremos ```JOB_GRANTED 1001``` Ò ```JOB_DENIED 1001```.
 5. Para testear el funcionamiento de la Cola, luego de realizar lo de arriba escribir en la terminar de Erlang: ```JOB_REQUEST 1002 @127.0.0.2:gpu:1```, la terminal quedarà esperando . En Nodo B , al no tener stock, lanzara el mensaje ```[INFO-COLA] Sin stock de gpu. Solicitud 1002 agregada a la cola.```. 

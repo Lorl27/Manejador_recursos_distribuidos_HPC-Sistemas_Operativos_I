@@ -124,9 +124,9 @@ Cola purgar_solicitudes_por_fd(Cola cola, int fd_caido);
 
 //ANCHOR - CREACION SERVIDORES
 
-//Crea un servidor en el puerto TCP pùblico (para otros nodos)
+//Crea un servidor en el puerto TCP público (para otros nodos)
 // retorna fd del socket.
-int crear_servidor_tcp_publico(int puerto);
+int crear_servidor_tcp_publico(const char * ip_lan, int puerto);
 
 //Crea un servidor en el puerto TCP en localhost (para Elang)
 // retorna fd del socket.
@@ -149,24 +149,32 @@ int crear_conexion_cliente(const char * ip_destino, int puerto_destino);
 void ejecutar_arranque_inicial(int epoll_fd, int sock_udp_broadcast,char * ip, int puerto_tcp, char * recursos);
 
 /*
-Crea sockets TCP public y local ademàs UPD Broadcats, utilizando datos de la computadora para la configuraciòn.
-anuncia mensajes periodicos, con el formato ANNOUNCE <IP> <puerto> <recursos> por broadcast
-Crea y registra eventos en epoll para luego atenderlos.
-*/
-void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico,int mi_puerto_local, char* mis_recursos);
+Inicializa el agente de recursos.
+ 
+Crea:
+   - Un servidor TCP público asociado a la IP del nodo.
+   - Un servidor TCP local asociado a 127.0.0.1.
+   - Un socket UDP para anuncios por broadcast.
+ 
+Ambos servidores TCP escuchan sobre el mismo puerto.
+ 
+Configura epoll, registra todos los descriptores y envía periódicamente mensajes con el formato:
+ ANNOUNCE <IP> <PUERTO> <RECURSOS>
+ */
+void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, char* mis_recursos);
 
 
 //ANCHOR - Validaciones y gestiones
 
-//Valida que el mensaje sea uno de los vàlidos.
-// RESERVE <job_id> <resource_name> <amount>
-// GRANTED <job_id>
-// DENIED <job_id>
-// RELEASE <job_id> <resource_name> <amount>
-// JOB_REQUEST <job_id> @<ip>:<recurso>:<cantidad> (Conexion entre Erlang y C)
-// JOB_RELEASE <job_id>
-// JOB_STATUS <job_id>
-// GET NODES (Conexion entre Erlang y C).
+//Valida que el mensaje sea uno de los válidos.
+// - RESERVE <job_id> <resource_name> <amount>
+// - GRANTED <job_id>
+// - DENIED <job_id>
+// - RELEASE <job_id> <resource_name> <amount>
+// - JOB_REQUEST <job_id> @<ip>:<recurso>:<cantidad> (Conexion entre Erlang y C)
+// - JOB_RELEASE <job_id>
+// - JOB_STATUS <job_id>
+// - GET NODES (Conexion entre Erlang y C).
 int validar_mensajes_validos(char * mensaje);
 
 /* 

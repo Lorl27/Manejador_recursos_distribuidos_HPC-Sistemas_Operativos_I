@@ -112,7 +112,7 @@ Cola purgar_solicitudes_por_fd(Cola cola, int fd_caido){
 //* !SECTION
 //*SECTION --- CREACION DE SERVIDORES ---
 
-int crear_servidor_tcp_publico(int puerto){
+int crear_servidor_tcp_publico(const char * ip_lan,int puerto){
     int sock_srv;
     struct sockaddr_in srv_name;
     int opt = 1;
@@ -133,7 +133,7 @@ int crear_servidor_tcp_publico(int puerto){
     fcntl(sock_srv, F_SETFL, flags | O_NONBLOCK);
   
     srv_name.sin_family = AF_INET;
-    srv_name.sin_addr.s_addr = INADDR_ANY; //acepta cualquiera.
+    srv_name.sin_addr.s_addr = inet_addr(ip_lan);
     srv_name.sin_port = htons(puerto);
 
     if(bind(sock_srv, (struct sockaddr*)&srv_name, sizeof(srv_name)) < 0) {
@@ -147,7 +147,7 @@ int crear_servidor_tcp_publico(int puerto){
         exit(EXIT_FAILURE);
     }
     
-    printf("[SERVER TCP PUBLICO] Creacion realizada con exito. Escuchando en puerto: %d\n",puerto);
+    printf("[SERVER TCP PUBLICO] Creacion realizada con exito. Escuchando en IP: %d puerto: %d\n",ip_lan,puerto);
     
     return sock_srv;
 }
@@ -324,12 +324,12 @@ void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast,char * ip, int
     printf("[INFO-ARRANQUE] Fase inicial completada.\n"); 
 }
 
-void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, int mi_puerto_local, char* mis_recursos){
+void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, char* mis_recursos){
     
     signal(SIGPIPE, SIG_IGN); //Ignorar desconexion inesperada de nodo remoto.
 
-    int srv_public=crear_servidor_tcp_publico(mi_puerto_publico);
-    int srv_local=crear_servidor_tcp_local(mi_puerto_local);
+    int srv_public=crear_servidor_tcp_publico(mi_ip_lan,mi_puerto_publico);
+    int srv_local=crear_servidor_tcp_local(mi_puerto_publico);
 
     int socket_broadcast=crear_socket_broadcast();
     struct sockaddr_in  cli_name;
