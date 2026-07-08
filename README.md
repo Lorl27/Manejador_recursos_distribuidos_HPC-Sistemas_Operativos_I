@@ -35,7 +35,7 @@ Requiere:
 ```
 
 ### Ejecución para pruebas locales (Simulando Erlang con NetCat)
-1. Iniciar el clúster local de prueba : levantará Nodo A (origen/local) y B(remoto) en ventanas separadas: 
+1. Iniciar el clúster local de prueba : levantará Nodo A (origen/local) y B (remoto) en ventanas separadas: 
  ```bash
     ./test_deadlock.sh
 ```
@@ -53,7 +53,7 @@ Se imprimirá por pantalla el mensaje:`[INFO-ARRANQUE] Enviando primer anuncio..
    Por ejemplo: `JOB_REQUEST 1001 @127.0.0.2:gpu:1` solicita `gpu` al Nodo B.
    Este comando provocará que el Nodo A busque la IP en  `TablaNodos` y abra una conexión TCP con el Nodo remoto. Luego le enviará `RESERVE 1001 gpu 1` al Nodo B y este verificará la `<cantidad_recurso>` (En este caso: `1`).
          - Si tiene capacidad enviará `GRANTED 1001`. El Nodo A recibe la respuesta y tras actualizar `TablaJobActivos`, le notificará a Erlang `JOB_GRANTED 1001`.
-         - Si no tiene capacidad, la solicitud se encolará (ver sección de COla FIFO) hasta que exista disponibilidad. En caso de que la operación deba abortarse enviará `DENIED 1001` y el Nodo A realizará el rollback liberando los recursos obtenidos parcialmente y, finalmente, le notificará a Erlang  `JOB_DENIED 1001`.
+         - Si no tiene capacidad, la solicitud se encolará (ver sección de Cola FIFO) hasta que exista disponibilidad. En caso de que la operación deba abortarse enviará `DENIED 1001` y el Nodo A realizará el rollback liberando los recursos obtenidos parcialmente y, finalmente, le notificará a Erlang  `JOB_DENIED 1001`.
        - Si no encuentra la IP: el Nodo A realizará el rollback liberando los recursos obtenidos parcialmente y, finalmente, le notificará a Erlang  `JOB_DENIED 1001`, indicando que el nodo solicitado no está registrado en `TablaNodos`. 
      1. `JOB_RELEASE <job_id>`: Libera todos los recursos asociados a `<job_id>`
     Por ejemplo `JOB_RELEASE 1001` provocará que el Nodo A consulte en `TablaJobActivos` los nodos cuyos recursos se le hayan asignado al job, para luego abrir una conexión TCP con cada uno de ellos e ir enviando `RELEASE <job_id> <recurso> <cantidad_recurso>` ( En este caso`RELEASE 1001 gpu 1`). 
@@ -62,7 +62,7 @@ Se imprimirá por pantalla el mensaje:`[INFO-ARRANQUE] Enviando primer anuncio..
      2. `JOB_STATUS <job_id>`: Devuelve el estado del job.
     Por ejemplo: `JOB_STATUS 1001` provocará que el Nodo A revise `TablaJobActivos` y:
           - Si existe: envie a Erlang `JOB_STATUS <estado>`
-          - Si no existe: tira la advertencia `[ERLANG-C WARNING] NO se encontro estado para el job <job_id>`
+          - Si no existe: tire la advertencia `[ERLANG-C WARNING] NO se encontro estado para el job <job_id>`
 
 ### Funcionamiento de la Cola FIFO de solicitudes
 La implementación garantiza una gestión justa de los recursos cuando la demanda supera el stock actual de un nodo.
@@ -76,7 +76,7 @@ Esto permite que un mismo job solicite recursos distribuidos en distintos nodos 
 ## Estructuras internas
 El agente mantiene tres estructuras principales:
 
-- **TablaNodos:** registra los nodos descubiertos mediante `ANNOUNCE`, junto con sus recursos anunciados y la marca temporal(timestamp) del último anuncio recibido.
+- **TablaNodos:** registra los nodos descubiertos mediante `ANNOUNCE`, junto con sus recursos anunciados y la marca temporal (timestamp) del último anuncio recibido.
 
 - **TablaJobActivos:** mantiene los recursos concedidos a cada job, permitiendo consultar su estado y liberar posteriormente todas las reservas asociadas.
 
@@ -102,13 +102,6 @@ GRANTED |
 DENIED 
 `
 
-### Manejo de fallos
-El agente cuenta con un sistema de auto-limpieza para garantizar la estabilidad del clúster:
-* **Nodos caídos:** Si un nodo deja de enviar `ANNOUNCE`, tras 15 segundos se considerará caído y se eliminará de la `TablaNodos`, dejando de estar disponibles para futuras reservas.
-* **Caídas de red:** Si un cliente TCP se desconecta inesperadamente, los recursos que se le habían asignado se recuperan de inmediato.
-* **Time-Outs:** Las reservas a otros nodos que queden trabadas y no se completen en 10 segundos son abortadas automáticamente, enviando al planificador de Erlang : `JOB_TIMEOUT`.
-
-
 #### Diagrama de la arquitectura :
 ```
             UDP Broadcast
@@ -125,9 +118,16 @@ El agente cuenta con un sistema de auto-limpieza para garantizar la estabilidad 
 |  Erlang A   |        |  Erlang B   |
 +-------------+        +-------------+
 ```
+
+### Manejo de fallos
+El agente cuenta con un sistema de auto-limpieza para garantizar la estabilidad del clúster:
+* **Nodos caídos:** Si un nodo deja de enviar `ANNOUNCE`, tras 15 segundos se considerará caído y se eliminará de la `TablaNodos`, dejando de estar disponibles para futuras reservas.
+* **Caídas de red:** Si un cliente TCP se desconecta inesperadamente, los recursos que se le habían asignado se recuperan de inmediato.
+* **Time-Outs:** Las reservas a otros nodos que queden trabadas y no se completen en 10 segundos son abortadas automáticamente, enviando al planificador de Erlang : `JOB_TIMEOUT`.
+
 ---
 
 > Testeado en Ubuntu 24.04.2 LTS
 
 # Autora
-###### Antonella Grassi
+Antonella Grassi
