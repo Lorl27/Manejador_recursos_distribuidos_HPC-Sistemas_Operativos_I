@@ -64,7 +64,7 @@ Se imprimirá por pantalla el mensaje:`[INFO-ARRANQUE] Enviando primer anuncio..
           - Si existe: envie a Erlang `JOB_STATUS <estado>`
           - Si no existe: tire la advertencia `[ERLANG-C WARNING] NO se encontro estado para el job <job_id>`
 
-### Funcionamiento de la Cola FIFO de solicitudes
+## Funcionamiento de la Cola FIFO de solicitudes
 La implementación garantiza una gestión justa de los recursos cuando la demanda supera el stock actual de un nodo.
 
 *  **Encolamiento automático:** Si Erlang solicita un recurso mediante `JOB_REQUEST 1002 @127.0.2:gpu:1` y el Nodo B no tiene `gpu` disponible en ese momento, éste agregará la petición a la cola de espera e informará con : `[INFO-COLA] Sin stock de gpu. Solicitud 1002 agregada a la cola.`.
@@ -119,15 +119,15 @@ DENIED
 +-------------+        +-------------+
 ```
 
-### Manejo de fallos
+## Manejo de fallos
+
 El agente cuenta con un sistema de auto-limpieza para garantizar la estabilidad del clúster:
 * **Nodos caídos:** Si un nodo deja de enviar `ANNOUNCE`, tras 15 segundos se considerará caído y se eliminará de la `TablaNodos`, dejando de estar disponibles para futuras reservas.
 * **Caídas de red:** Si un cliente TCP se desconecta inesperadamente, los recursos que se le habían asignado se recuperan de inmediato.
 * **Time-Outs:** Las reservas a otros nodos que queden trabadas y no se completen en 10 segundos son abortadas automáticamente, enviando al planificador de Erlang : `JOB_TIMEOUT`.
 
----
-
-> Testeado en Ubuntu 24.04.2 LTS
 
 # Autora
 Antonella Grassi
+
+> Testeado en Ubuntu 24.04.2 LTS
