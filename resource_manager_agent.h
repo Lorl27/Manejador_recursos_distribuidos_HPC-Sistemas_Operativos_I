@@ -109,7 +109,7 @@ typedef struct _TablaJobActivos {
 
 //Inicializa los recursos pasados (formato: "cpu:4 mem:8192 gpu:1") en el main.c ,
 // para poder utilizarlos.
-void inicializar_mis_recursos(char * mis_recursos);
+void inicializar_mis_recursos(const char * mis_recursos);
 
 //ANCHOR - Funciones axuiliares cola
 
@@ -175,7 +175,7 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, char* mis_recurs
 // - JOB_RELEASE <job_id>
 // - JOB_STATUS <job_id>
 // - GET NODES (Conexion entre Erlang y C).
-int validar_mensajes_validos(char * mensaje);
+int validar_mensajes_validos(const char * mensaje);
 
 /* 
 Si recibe RESERVE :
@@ -185,10 +185,10 @@ Si recibe RESERVE :
 Si recibe RELEASE:
     - se libera la cantidad, se descuenta del job y se atienden las encoladas por orden.
 */
-void gestionar_recursos_locales(RecursosLocales * recursos, char * comando, int job_id, int amount,int fd_cliente);
+void gestionar_recursos_locales(RecursosLocales * recursos, const char * comando, int job_id, int amount,int fd_cliente);
 
 //Retorna la cantidad de recursos solicitados en JOB_REQUEST
-int contar_recursos_pedidos_Erlang(char *mensaje_original);
+int contar_recursos_pedidos_Erlang(const char *mensaje_original);
 
 // Limpia todas las reservas (y solicitudes encoladas) asociadas a un socket que se desconectó.
 void limpiar_recursos_por_desconexion(int fd);
@@ -201,14 +201,14 @@ void limpiar_nodos_caidos();
 
 //Inserta el nodo en la tablaNodos (si es que no existia)
 // SI existia antes, actualizamos timestamp.
-void insertar_en_tablaNodos(char * buffer, char *ip);
+void insertar_en_tablaNodos(const char * buffer, const char *ip_recibida);
 
 //Envia la lista de nodos a erlang (NODES ip:puerto:recursos;ip..)
 void enviar_lista_nodos(int fd_erlang);
 
 // Busca el puerto de una IP en tablaNodos
 // retorna -1 si no lo encuentra.
-int buscar_puerto_por_IP(char * ip);
+int buscar_puerto_por_IP(const char * ip);
 
 //ANCHOR -  Solicitud Respuesta Recursos 
 
@@ -227,6 +227,6 @@ void liberar_job(int job_id,int epoll_fd);
 int conocer_estado_job(int job_id);
 
 // Registra un nuevo recurso solicitado para un Job en la tabla
-void registrar_recurso_job(int job_id, char* ip, int puerto, char* recurso_name, int amount);
+void registrar_recurso_job(int job_id, const char* ip, int puerto, const char* recurso_name, int amount);
 
 #endif

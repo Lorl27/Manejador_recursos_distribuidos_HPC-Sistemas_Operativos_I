@@ -6,7 +6,7 @@
 echo "Compilando agente_recursos..."
 make rebuild
 
-# Verificar si la compilación fue exitosa
+# Verificar si la compilación fue éxitosa
 if [ $? -ne 0 ]; then
     echo "Error en la compilación. Abortando."
     exit 1

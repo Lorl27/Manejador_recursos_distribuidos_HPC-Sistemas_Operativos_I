@@ -18,7 +18,7 @@ TablaJobActivos tabla_jobs_activos[MAX_JOBS_ACTIVOS];
 
 //*SECTION --- INICIALIZACIÒN ---
 
-void inicializar_mis_recursos(char * mis_recursos) {
+void inicializar_mis_recursos(const char * mis_recursos) {
     char copia[256];
     strncpy(copia, mis_recursos, sizeof(copia)-1);
     copia[sizeof(copia)-1] = '\0';
@@ -147,7 +147,7 @@ int crear_servidor_tcp_publico(const char * ip_lan,int puerto){
         exit(EXIT_FAILURE);
     }
     
-    printf("[SERVER TCP PUBLICO] Creacion realizada con exito. Escuchando en IP: %d puerto: %d\n",ip_lan,puerto);
+    printf("[SERVER TCP PUBLICO] Creacion realizada con exito. Escuchando en IP: %s puerto: %d\n",ip_lan,puerto);
     
     return sock_srv;
 }
@@ -881,13 +881,13 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, char* mis_recurs
 //* !SECTION
 //*SECTION --- Validaciones y gestiones ----
 
-int validar_mensajes_validos(char * mensaje){
-    char comando[32];
-    int job_id;
+int validar_mensajes_validos(const char * mensaje){
+    char comando[32]="";
+    int job_id=0;
     char recursos_name[32] = "";
     char ip_destino[32] = "";
     char sub_comando[32] = "";
-    int recursos_tam;
+    int recursos_tam=0;
 
     int recibidos = sscanf(mensaje,"%31s",comando);
 
@@ -926,19 +926,27 @@ int validar_mensajes_validos(char * mensaje){
     return 0;
 }
 
-void gestionar_recursos_locales(RecursosLocales * recurso, char * comando, int job_id, int amount, int fd_cliente){
+void gestionar_recursos_locales(RecursosLocales * recurso, const char * comando, int job_id, int amount, int fd_cliente){
     char respuesta[MAX_MSG];
 
     if(strcmp(comando,"RESERVE")==0){
         if(recurso->cantidadDisponible>=amount && amount<=recurso->capacidadTotal){
             recurso->cantidadDisponible-=amount;
 
-            //Registro de asignacion
-            int pos = recurso->cantidad_asignaciones;
-            recurso->asignaciones[pos].fd_cliente = fd_cliente;
-            recurso->asignaciones[pos].amount = amount;
-            recurso->asignaciones[pos].job_id = job_id;
-            recurso->cantidad_asignaciones++;
+            if(recurso->cantidad_asignaciones <MAX_PENDING){
+                //Registro de asignacion
+                int pos = recurso->cantidad_asignaciones;
+                recurso->asignaciones[pos].fd_cliente = fd_cliente;
+                recurso->asignaciones[pos].amount = amount;
+                recurso->asignaciones[pos].job_id = job_id;
+                recurso->cantidad_asignaciones++;
+            }else{
+                printf("[COLA-ERROR] Tabla de asignaciones llena.\n");
+
+                snprintf(respuesta,sizeof(respuesta),"DENIED %d\n",job_id);
+                send(fd_cliente,respuesta,strlen(respuesta),0);
+                return;
+            }
 
             //Armamos y mandamos la respuesta TCP al agente que la pidió
             snprintf(respuesta, sizeof(respuesta), "GRANTED %d\n", job_id);
@@ -983,7 +991,7 @@ void gestionar_recursos_locales(RecursosLocales * recurso, char * comando, int j
     }
 }
 
-int contar_recursos_pedidos_Erlang(char *mensaje_original){
+int contar_recursos_pedidos_Erlang(const char *mensaje_original){
     int cantidad=0;
     char copia[MAX_MSG];
     strncpy(copia,mensaje_original,MAX_MSG-1);
@@ -1018,6 +1026,8 @@ void limpiar_recursos_por_desconexion(int fd_caido) {
             if(res->asignaciones[y].fd_cliente==fd_caido){
                 int cantidad_recuperada= res->asignaciones[y].amount;
                 res->cantidadDisponible+= cantidad_recuperada;
+                if(res->cantidadDisponible > res->capacidadTotal)res->cantidadDisponible = res->capacidadTotal;
+                
                 printf("[INFO-LIMPIEZA] Recuperados %d de %s del job %d.\n", 
                 cantidad_recuperada, res->nombre, res->asignaciones[y].job_id);
 
@@ -1045,7 +1055,7 @@ void limpiar_nodos_caidos(){
     }
 }
 
-void insertar_en_tablaNodos(char * buffer, char * ip_recibida){
+void insertar_en_tablaNodos(const char * buffer, const char * ip_recibida){
     char comando[16];
     int puerto_recibido;
     char recursos_recibidos[128] = "";
@@ -1107,7 +1117,7 @@ void enviar_lista_nodos(int fd_erlang){
     printf("[INFO-SERVIDOR] Lista de nodos enviada a Erlang.\n");
 }
 
-int buscar_puerto_por_IP(char * ip){
+int buscar_puerto_por_IP(const char * ip){
     for(int x=0;x<cantidad_nodos;x++){
         if(strcmp(tabla_activos[x].IP,ip)==0){
             return tabla_activos[x].puerto;
@@ -1147,7 +1157,7 @@ int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,cha
             return x;
         }
     }
-    printf("[SOLICITUD RESPUESTA ERROR] No se pudo guardar la relacion para jod_id %d, debido a que se encuentra llena la capacidad de solicitudes.\n",job_id);
+    printf("[SOLICITUD RESPUESTA ERROR] No se pudo guardar la relacion para job_id %d, debido a que se encuentra llena la capacidad de solicitudes.\n",job_id);
     return -1;
 }
 
@@ -1163,9 +1173,9 @@ void liberar_job(int job_id,int epoll_fd){
             
             //Recorremos todos los recursos del job:
             for(int y=0;y<tabla_jobs_activos[x].cantidad_recursos;y++){
-                char * ip=tabla_jobs_activos[x].recursos[y].ip;
+                const char * ip=tabla_jobs_activos[x].recursos[y].ip;
                 int puerto=tabla_jobs_activos[x].recursos[y].puerto;
-                char * recurso_name=tabla_jobs_activos[x].recursos[y].recurso_name;
+                const char * recurso_name=tabla_jobs_activos[x].recursos[y].recurso_name;
                 int cantidad=tabla_jobs_activos[x].recursos[y].amount;
  
                 int fd_remoto=crear_conexion_cliente(ip,puerto);
@@ -1209,7 +1219,7 @@ int conocer_estado_job(int job_id){
     return -1;
 }
 
-void registrar_recurso_job(int job_id, char* ip, int puerto, char* recurso_name, int amount){
+void registrar_recurso_job(int job_id, const char* ip, int puerto, const char* recurso_name, int amount){
     int indice=-1;
 
     for(int x=0;x<MAX_JOBS_ACTIVOS;x++){

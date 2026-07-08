@@ -1,77 +1,133 @@
-# Descripción del trabajo práctico
-Es un middleware distribuido para la gestión de recursos en un clúster: CPU, memoria y GPU.
+# Manejador de Recursos Distribuidos para HPC (Agente C)
+Es un middleware distribuido para la gestión de recursos (CPU,Memoria y GPU) en un clúster. Implementa concurrencia asincrónica mediante `epoll` para coordinar el acceso a los recursos sin bloquear el procesamiento de múltiples conexiones simultáneas.
 
-El nodo utiliza 3 capas de comunicaciòn:
-1. **UDP BROADCAST:** Envia anuncios (*ANNOUNCE*) cada 3 segundos, para que otros nodos se descubran dinàmicamente.
-2. **TCP PÙBLICO:** Atiende las peticiones de otros agentes (*RESERVE / RELEASE*) de forma no bloqueante, con epoll. 
-3. **TCP LOCAL (ERLANG):** Escucha peticiones locales (*JOB_REQUEST / JOB_RELEASE / JOB_STATUS / GET NODES*) que permite coordinar la comunicaciòn.
+El agente utiliza 3 capas de comunicación simultáneas:
 
-## Librerias necesarias previas 
+1. **UDP BROADCAST:** Envía anuncios (`ANNOUNCE`) cada 3 segundos, para el descubrimiento dinámico de otros nodos.
+2. **TCP PÚBLICO:** Atiende las peticiones de otros agentes (`RESERVE / RELEASE`) de forma no bloqueante, con epoll.
+3. **TCP LOCAL (ERLANG):** Interfaz TCP exclusiva para peticiones locales del planificador de Erlang (`JOB_REQUEST / JOB_RELEASE / JOB_STATUS / GET NODES`) que permiten coordinar la comunicación.
+
+## Requisitos previos
 ```console
 sudo apt update
-sudo apt install build-essential libc6-dev
+sudo apt install build-essential libc6-dev xterm
 ```
 
-
-## Compilacion
-Genera un binario llamado agente_recursos
-```console
-make
+## Compilación
+```bash
+ make rebuild # Genera un binario ejecutable llamado agente_recursos
 ```
 
-## Ejecuciòn
+## Ejecución
 Requiere:
-- ```IP:``` Es la IP pública del nodo
-- ```PUERTO:``` Es el puerto TCP utilizado simultáneamente para:
+- `IP:` Dirección IP de la interfaz de escucha pública 
+- `PUERTO:` Puerto TCP utilizado simultáneamente para:
   - Comunicación entre agentes (Mediante socket asociado a IP Pública del nodo)
-  - Comunicación local exclusiva con Erlang (Mediante socket asociado a IP_LOCAL = 127.0.0.1).
-- ```RECURSOS:``` Una cadena de texto con los recursos locales disponibles.
-```console
+  - Comunicación local exclusiva con Erlang (Mediante socket asociado a `IP_LOCAL = 127.0.0.1`).
+- `RECURSOS:` Cadena de texto con los recursos locales disponibles.
+```markdown
 ./agente_recursos <IP> <PUERTO>  "<RECURSOS>"
 ```
 
-#### Ejemplo de ejecuciòn:
+#### Ejemplo de ejecución
 ```console
 ./agente_recursos 192.168.1.50 8100 "cpu:4 mem:8192 gpu:1"
 ```
 
-Al ejecutarlo, veràs en la consola: ```
-[INFO-ARRANQUE] Enviando primer anuncio...```
+### Ejecución para pruebas locales (Simulando Erlang con NetCat)
+1. Iniciar el clúster local de prueba : levantará Nodo A (origen/local) y B(remoto) en ventanas separadas: 
+ ```bash
+    ./test_deadlock.sh
+```
+Se imprimirá por pantalla el mensaje:`[INFO-ARRANQUE] Enviando primer anuncio...` y como ambos agentes se ejecutan en la misma máquina, intercambiarán automáticamente mensajes `ANNOUNCE` y se descubrirán mutuamente, añadiéndose a su respectiva `TablaNodos`.
 
-### Flujo de operación
+2. En una terminal nueva, para simular el planificador Erlang del Nodo A, conectarse por TCP local con:  
+ ```bash
+  nc 127.0.0.1 8001 # Si desea del Nodo B: nc 127.0.0.1 8002
+```
+3. Ejecutar los siguientes comandos en la terminal de NetCat para validar el flujo:
+   1. `GET NODES`: Consulta nodos vivos.
+   El Nodo A registrará el comando recibido y responderá con la lista de nodos activos (`NODES IP:PUERTO:RECURSOS;`). 
+   En la terminal de Erlang, aparecerá dicha lista.
+   2. `JOB_REQUEST <job_id> <@IP>:<recurso>:<cantidad_recurso>`: Solicita `<recurso>` al nodo con IP `<@IP> `.
+   Por ejemplo: `JOB_REQUEST 1001 @127.0.0.2:gpu:1` solicita `gpu` al Nodo B.
+   Este comando provocará que el Nodo A busque la IP en  `TablaNodos` y abra una conexión TCP con el Nodo remoto. Luego le enviará `RESERVE 1001 gpu 1` al Nodo B y este verificará la `<cantidad_recurso>` (En este caso: `1`).
+         - Si tiene capacidad enviará `GRANTED 1001`. El Nodo A recibe la respuesta y tras actualizar `TablaJobActivos`, le notificará a Erlang `JOB_GRANTED 1001`.
+         - Si no tiene capacidad, la solicitud se encolará (ver sección de COla FIFO) hasta que exista disponibilidad. En caso de que la operación deba abortarse enviará `DENIED 1001` y el Nodo A realizará el rollback liberando los recursos obtenidos parcialmente y, finalmente, le notificará a Erlang  `JOB_DENIED 1001`.
+       - Si no encuentra la IP: el Nodo A realizará el rollback liberando los recursos obtenidos parcialmente y, finalmente, le notificará a Erlang  `JOB_DENIED 1001`, indicando que el nodo solicitado no está registrado en `TablaNodos`. 
+     1. `JOB_RELEASE <job_id>`: Libera todos los recursos asociados a `<job_id>`
+    Por ejemplo `JOB_RELEASE 1001` provocará que el Nodo A consulte en `TablaJobActivos` los nodos cuyos recursos se le hayan asignado al job, para luego abrir una conexión TCP con cada uno de ellos e ir enviando `RELEASE <job_id> <recurso> <cantidad_recurso>` ( En este caso`RELEASE 1001 gpu 1`). 
+    Por último, limpia el registro en `TablaJobActivos`.
+    (Nota: Si se intenta liberar un Job inexistente, el agente registrará una advertencia interna sin afectar el sistema).
+     2. `JOB_STATUS <job_id>`: Devuelve el estado del job.
+    Por ejemplo: `JOB_STATUS 1001` provocará que el Nodo A revise `TablaJobActivos` y:
+          - Si existe: envie a Erlang `JOB_STATUS <estado>`
+          - Si no existe: tira la advertencia `[ERLANG-C WARNING] NO se encontro estado para el job <job_id>`
 
-- Si se inicia otra instancia, ambos nodos se descubrirán mediante ```ANNOUNCE``` y se añadirán a la TablaNodos.
+### Funcionamiento de la Cola FIFO de solicitudes
+La implementación garantiza una gestión justa de los recursos cuando la demanda supera el stock actual de un nodo.
 
-- Erlang ejecuta ``` GET NODES``` para obtener la tabla de nodos activos desde C, decide lanzar un job.
-- Erlang envia ``` JOB_REQUEST 1001 @192.168.1.2:cpu:2```
-- El agente de C realiza los sig. pasos: 
-  - Busca el nodo en la tabla y crea la conexiòn asincrònica con el cliente
-  - Registra el Job en TablaJobActivos y, el evento EPOLLOUT para confirma la conexiòn
-  - Envia ```RESERVE 1001 cpu 2``` al nodo remoto
-  - El nodo remoto recibe ```RESERVE```, verifica stock y responde ```GRANTED 1001```
-  - El nodo local recibe ```GRANTED``` y,  tras actualizar TablaJobActivos, le notifica a Erlang con ```JOB_GRANTED 1001```
-- Cuando Erlang termina el job, envia  ```JOB_RELEASE 1001```
-- El agente en C realiza los sig. pasos:
-  - Consulta TablaJobActivos para ver a què IP les pidio los recursos, 
-  - Abre una conexiòn TCP con cada nodo vinculado y envia ```RELEASE 1001 cpu 2```
-  - FInalmente, limpia TablaJobActivos.
+*  **Encolamiento automático:** Si Erlang solicita un recurso mediante `JOB_REQUEST 1002 @127.0.2:gpu:1` y el Nodo B no tiene `gpu` disponible en ese momento, éste agregará la petición a la cola de espera e informará con : `[INFO-COLA] Sin stock de gpu. Solicitud 1002 agregada a la cola.`.
+*  **Liberación y reasignación:** Cuando el Job anterior termine y Erlang envie `JOB_RELEASE 1001`, provocará que el Nodo A busque el `job` en `TablaJobActivos` para encontrar a qué Nodo se le pidió el recurso `gpu`. Luego, le enviará `RELEASE 1001 gpu 1` a ese mismo Nodo. Entonces, el Nodo B liberará la `gpu`. Luego, éste revisará su cola FIFO, detectará que el primer elemento de la cola pertenece al `job 1002` (estaba esperando), le asignará el recurso y enviará `GRANTED 1002`. Finalmente, en la terminal de Erlang, recibimos `JOB_GRANTED 1002`.
+*  **Manejo de transacciones parciales:** Si un `JOB_REQUEST` incluye múltiples recursos (Por ejemplo: `JOB_REQUEST 1003 @192.168.1.2:cpu:2 @192.168.1.3:gpu:1`) y uno de ellos falla o es denegado (`DENIED`): el Nodo A aplicará un rollback automático, enviando `RELEASE` a los recursos que había concedido parcialmente. Esto evita que se produzcan `DEADLOCKS` por retención de recursos bloqueados.
+
+Esto permite que un mismo job solicite recursos distribuidos en distintos nodos garantizando consistencia: el job obtiene todos los recursos solicitados o ninguno de ellos, manteniendo además el orden FIFO para las solicitudes pendientes.
+
+## Estructuras internas
+El agente mantiene tres estructuras principales:
+
+- **TablaNodos:** registra los nodos descubiertos mediante `ANNOUNCE`, junto con sus recursos anunciados y la marca temporal(timestamp) del último anuncio recibido.
+
+- **TablaJobActivos:** mantiene los recursos concedidos a cada job, permitiendo consultar su estado y liberar posteriormente todas las reservas asociadas.
+
+- **Colas FIFO por recurso:** cada recurso local (`CPU`, `GPU` y `MEM`) mantiene una cola independiente de solicitudes pendientes, que se utiliza cuando la capacidad disponible resulta insuficiente.
+
+## Protocolo de mensajes
+
+#### Entre Erlang y el agente
+`
+GET NODES |
+JOB_REQUEST |
+JOB_RELEASE |
+JOB_STATUS |
+JOB_TIMEOUT
+`
+
+#### Entre agentes
+`
+ANNOUNCE |
+RESERVE |
+RELEASE |
+GRANTED |
+DENIED 
+`
 
 ### Manejo de fallos
-Si un nodo (por ejemplo 192.168.1.2) deja de enviar ```ANNOUNCE```, tras 15 segundos se considerará caído y se eliminará de la TablaNodos.
+El agente cuenta con un sistema de auto-limpieza para garantizar la estabilidad del clúster:
+* **Nodos caídos:** Si un nodo deja de enviar `ANNOUNCE`, tras 15 segundos se considerará caído y se eliminará de la `TablaNodos`, dejando de estar disponibles para futuras reservas.
+* **Caídas de red:** Si un cliente TCP se desconecta inesperadamente, los recursos que se le habían asignado se recuperan de inmediato.
+* **Time-Outs:** Las reservas a otros nodos que queden trabadas y no se completen en 10 segundos son abortadas automáticamente, enviando al planificador de Erlang : `JOB_TIMEOUT`.
 
-## Ejecucion para testeo ràpida:
-Nodo A: ```nc 127.0.0.1 8001```
-Nodo B: ```nc 127.0.0.1 8002```
 
-## Resultado esperado:
-1. Ejecutar en una terminal: ```./test_deadlock.sh ```. Se abriran 2 ventanas (Nodo A y Nodo B), veràs el arranque inicial en ambos y como estàn en localhost se iràn pasando los nodos entre sì.
-2. Luego de eso ejecutar en otra terminal ```nc 127.0.0.1 8001```, simulara ser Erlang.
-3. En la terminal de Erlang, escribir ```GET NODES```, aparecera la lista de nodos activos. Nodo A comunicarà que recibio el comando y, le envio la lista a Erlang.
-4. En la terminal de Erlang, escribir ```JOB_REQUEST 1001 @127.0.0.2:gpu:1```. Nodo A procesa el comando, busca en la tabla la IP y, lanza la conexiòn al puerto del Nodo B (Envia ```RESERVE 1001 gpu 1```). El Nodo B recibe el ```RESERVE```, verifica si tiene la capacidad del recurso y envia (en caso afirmativo: ```GRANTED 1001``` - En caso negativo: ```DENIED 1001```). Luego, en la terminal de Erlang recibiremos ```JOB_GRANTED 1001``` Ò ```JOB_DENIED 1001```.
-5. Para testear el funcionamiento de la Cola, luego de realizar lo de arriba escribir en la terminar de Erlang: ```JOB_REQUEST 1002 @127.0.0.2:gpu:1```, la terminal quedarà esperando . En Nodo B , al no tener stock, lanzara el mensaje ```[INFO-COLA] Sin stock de gpu. Solicitud 1002 agregada a la cola.```. 
-6.  Para que Erlang termine su trabajo: escribir en su terminal ```JOB_RELEASE 1001```, el NodoA buscara en TablaJobActivos y encontrarà que le pidio el recurso (GPU) al Nodo B, por lo que enviara ```RELEASE 1001 gpu 1``` a èste. El Nodo B libera el recurso (GPU) y...
-    - Si tenia a un job en la cola: Se da cuenta que el ```Job 1002``` estaba en la cola esperando ese recurso, manda ```GRANTED 1002```  y en la terminal de Erlang recibimos ```JOB_GRANTED 1002```
-NOTA: En caso de que se intente liberar uno ya liberado / no exista el job, Nodo A avisara con un mensaje en pantalla.
-1. Para conocer el estado de un job, en Erlang : ```JOB_STATUS 1002```, El Nodo A informara el estado si es que existe y enviara a Erlang ```JOB_STATUS status```. Si no existe el Nodo A tirara un warning.
+#### Diagrama de la arquitectura :
+```
+            UDP Broadcast
+        +-------------------+
+        |                   |
++---------------+    +---------------+
+| Agente C (A)  |<-->| Agente C (B)  |
++---------------+    +---------------+
+        ^                    ^
+        |                    |
+   TCP Local            TCP Local
+        |                    |
++-------------+        +-------------+
+|  Erlang A   |        |  Erlang B   |
++-------------+        +-------------+
+```
+---
 
->Nota: Testeado en Ubuntu 24.04.2 LTS
+> Testeado en Ubuntu 24.04.2 LTS
+
+# Autora
+###### Antonella Grassi
