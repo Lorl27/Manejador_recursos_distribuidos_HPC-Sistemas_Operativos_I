@@ -21,16 +21,16 @@
 #include <signal.h>
 
 
-#define MAX_NODOS 50 // maximo de nodos que podemos llegar a conocer (simultaneas)
+#define MAX_NODOS 256 // Máximo de nodos que podemos llegar a conocer simultáneamente 
 #define MAX_MSG 1024
-#define MAX_EVENTS 64 //cant eventos epoll (simultaneos)
-#define MAX_PENDING 100 // maximo de peticiones hacia otros nodos (simultaneas)
-#define MAX_JOBS_ACTIVOS 100
-#define MAX_RECURSOS_POR_JOB 5
+#define MAX_EVENTS 64 // Máximo eventos epoll simultáneos 
+#define MAX_PENDING 256 // Máximas peticiones simultáneas hacia otros nodos 
+#define MAX_JOBS_ACTIVOS 256 // Cantidad máxima de jobs simultáneos
+#define MAX_RECURSOS_POR_JOB 10 // Cantidad máxima de recursos distintos pedidos simultáneos por job
 
-#define INTERVALO_SEG 3
+#define INTERVALO_SEG 3 // Frecuencia del envío de ANNOUNCE por Broadcast.
 #define TIEMPO_CAIDO 15
-#define TIMEOUT_JOB_SEG 10  //Timeout para eliminar reservas que nunca se completen.
+#define TIMEOUT_JOB_SEG 10  //Tiempo máximo de espera para eliminar reservas inconclusas.
 
 #define BROADCAST_IP "255.255.255.255"
 #define LOCAL_IP "127.0.0.1" 
@@ -40,6 +40,9 @@
 #define CAIDO(x) ((time(NULL)-(x)->timestamp)>TIEMPO_CAIDO)
 
 //ANCHOR ESTRUCTURAS BASE DE DATOS:
+
+//Uso: Registro de los nodos descubiertos dinámicamente mediante Broadcast
+// Permite saber a qué IP/Puerto conectarnos cuando Erlang nos pide buscar recursos externos.
 typedef struct _TablaNodos{
     char IP[16];
     int puerto;
@@ -47,45 +50,51 @@ typedef struct _TablaNodos{
     time_t timestamp;
 } TablaNodos;
 
-//Uso: Para gestionar nuestros recursos, cuando nos lo piden.
+//Uso: Para encolar las peticiones cuando no tenemos stock disponible.
 typedef struct _SolicitudRecurso {
     int job_id;
     int amount;
     int fd_origen; // El socket al que le tenemos que mandar el GRANTED
 } SolicitudRecurso;
 
-//Uso: Para guardar en memoria quièn fue el que pidio originalmente el recurso, luego de pedirle a Erlang el mismo.
+//Uso: Para guardar en memoria quién fue el que pidió originalmente el recurso,
+// luego de que Erlang nos hiciera la solicitud.
 typedef struct _SolicitudRespuestaRecurso{
     int fd_remoto; //socket que se comunica con el otro nodo.
-    int fd_erlang; //a quien hay que darle la respuesta (socket local) ò -1 si es RELEASE
+    int fd_erlang; //a quien hay que darle la respuesta (socket local) ó -1 si es RELEASE
     int job_id;
-    int activo; //1: en uso - 0:libre
-    //campos para que NO sea bloqueante:
-    int conectando;  //1: esperando conexion - 0: ya conectado.
+    int activo; //1: en uso ; 0:libre
+
+    //Campos para que NO sea bloqueante:
+    int conectando;  //1: esperando conexión ; 0: ya conectado.
     char recurso_name[16];
     int amount;
-    //PARA RESERVE/RELEASE:
+
+    //Para el envío de RESERVE/RELEASE:
     char ip[16];
     int puerto;
-    int es_release; //1: release - 0: reserve
+    int es_release; //1: Es release ; 0: Es reserve (No es release)
     time_t timestamp;
 } SolicitudRespuestaRecurso;
 
+//Uso: Para recuperar nuestros recursos si el cliente se desconectó de forma brusca
 typedef struct _Asignacion {
     int fd_cliente;
     int amount;
     int job_id;
 } Asignacion;
+
+//Uso: Administra el stock del recurso local
 typedef struct _RecursosLocales{
     char nombre[16];
     int capacidadTotal;
     int cantidadDisponible;
     Cola solicitudesPendientes;
     int cantidad_asignaciones;
-    Asignacion asignaciones[MAX_PENDING]; //Para saber a quien le prestamos recursos.
+    Asignacion asignaciones[MAX_PENDING]; //Para saber a quién le prestamos nuestros recursos.
 }RecursosLocales;
 
-// USO: Para saber a quien le pedimos què cosa
+// USO: Para registrar qué recursos nos han concedido otros nodos
 typedef struct _RecursoConcedido {
     char ip[16];
     int puerto;
@@ -93,33 +102,41 @@ typedef struct _RecursoConcedido {
     int amount;
 } RecursoConcedido;
 
+typedef enum _TablaJobActivoEstado{
+    LIBRE = 0,
+    SOLICITANDO = 1,
+    ACTIVO = 2
+} TablaJobActivosEstado;
+
+//Uso: Realiza el seguimiento de un Job solicitado por Erlang
+// Controla cuántas respuestas llegaron de la red y define si la transacción fue exitosa o si requiere Rollback.
 typedef struct _TablaJobActivos {
     int job_id;
-    int estado_job; // 0=libre - 1=solicitando - 2=activo
-    int cantidad_recursos; //recursos GRANTED exitosos guardados
-    int cantidad_esperados; //recursos pedidos en total en JOB_REQUEST
-    int cantidad_respondidos; //Cuantos GRANTED/DENIED nos llegaron
-    int cantidad_denegados; // si es >0 : job global fallo.
+    TablaJobActivosEstado estado_job; 
+    int cantidad_recursos; //Recursos GRANTED exitosos guardados
+    int cantidad_esperados; //Recursos pedidos en total en JOB_REQUEST
+    int cantidad_respondidos; //Cuántos GRANTED/DENIED nos llegaron
+    int cantidad_denegados; // si es >0 : La transacción global falló -> Se precisa rollback.
 
-    RecursoConcedido recursos[MAX_RECURSOS_POR_JOB]; 
+    RecursoConcedido recursos[MAX_RECURSOS_POR_JOB]; //Detalle de los recursos que nos prestaron
 } TablaJobActivos;
 
 
-//ANCHOR -- Inicializaciòn
 
-//Inicializa los recursos pasados (formato: "cpu:4 mem:8192 gpu:1") en el main.c ,
-// para poder utilizarlos.
+//ANCHOR -- Inicialización
+
+//Inicializa la estructura de RecursosLocales con los recursos pasados en formato: "cpu:4 mem:8192 gpu:1".
 void inicializar_mis_recursos(const char * mis_recursos);
 
 //ANCHOR - Funciones axuiliares cola
 
-//copia la solicitud de recurso.
+//Copia la solicitud de recurso.
 void* copiar_solicitud(void* dato);
 
-//libera la memoria de la solicitud de recurso, destruyendola.
+//Libera la memoria de la solicitud de recurso, destruyendola.
 void destruir_solicitud(void* dato);
 
-//ELimina las solicitudes de la Cola, del fd caido.
+//Elimina las solicitudes pendientes de la Cola asociadas al cliente (fd_caido) que se ha desconectado.  
 Cola purgar_solicitudes_por_fd(Cola cola, int fd_caido);
 
 //ANCHOR - CREACION SERVIDORES
@@ -128,8 +145,8 @@ Cola purgar_solicitudes_por_fd(Cola cola, int fd_caido);
 // retorna fd del socket.
 int crear_servidor_tcp_publico(const char * ip_lan, int puerto);
 
-//Crea un servidor en el puerto TCP en localhost (para Elang)
-// retorna fd del socket.
+//Crea un servidor  TCP en localhost ( Exclusivo para Erlang)
+//Retorna fd del socket.
 int crear_servidor_tcp_local(int puerto);
 
 //ANCHOR - CREACION SOCKETS
@@ -139,8 +156,8 @@ int crear_servidor_tcp_local(int puerto);
 // retorna fd del socket.
 int crear_socket_broadcast(void);
 
-// Inicia conexiòn TCP hacia el agente remoto.
-// retorna fd del socket ò -1 si fallo.
+// Inicia conexión TCP hacia el agente remoto.
+// Retorna fd del socket ó -1 si falla.
 int crear_conexion_cliente(const char * ip_destino, int puerto_destino);
 
 //ANCHOR -- Eventos principales
@@ -171,55 +188,59 @@ void iniciar_event_loop(char* mi_ip_lan, int mi_puerto_publico, char* mis_recurs
 // - GRANTED <job_id>
 // - DENIED <job_id>
 // - RELEASE <job_id> <resource_name> <amount>
-// - JOB_REQUEST <job_id> @<ip>:<recurso>:<cantidad> (Conexion entre Erlang y C)
+// - JOB_REQUEST <job_id> @<ip>:<recurso>:<cantidad> (Conexión entre Erlang y C)
 // - JOB_RELEASE <job_id>
 // - JOB_STATUS <job_id>
-// - GET NODES (Conexion entre Erlang y C).
+// - GET NODES (Conexión entre Erlang y C).
 int validar_mensajes_validos(const char * mensaje);
 
-/* 
+/*
+Gestiona una petición sobre un recurso local:
+
 Si recibe RESERVE :
-    - si hay suficiente disponible, se descuenta y responde GRANTED
-    - sino, se encola la solicitud.
+    - Si hay disponibilidad, se concede el recurso y responde GRANTED
+    - Sino, se encola la solicitud.
 
 Si recibe RELEASE:
-    - se libera la cantidad, se descuenta del job y se atienden las encoladas por orden.
+    - Se libera el recurso y se atienden las solicitudes encoladas por orden.
 */
 void gestionar_recursos_locales(RecursosLocales * recursos, const char * comando, int job_id, int amount,int fd_cliente);
 
 //Retorna la cantidad de recursos solicitados en JOB_REQUEST
 int contar_recursos_pedidos_Erlang(const char *mensaje_original);
 
-// Limpia todas las reservas (y solicitudes encoladas) asociadas a un socket que se desconectó.
+// Limpia todas las reservas (y solicitudes encoladas) asociadas al socket que se desconectó.
+//  Recupera todos los recursos que se le hubieran prestado.
 void limpiar_recursos_por_desconexion(int fd);
 
 //ANCHOR - Manejo de la Tabla de Nodos
 
-// Si encontramos un nodo cuyo tiempo supero los 15s, se elimina de la tabla.
-// Se reemplaza con el ùltimo nodo disponible, y se vuelve a verificar que no se encuentre caìdo.
+// Si encontramos un nodo cuyo tiempo supero el de inactividad (15s), se elimina de la tabla.
+// Se reemplaza con el último nodo disponible, y se vuelve a verificar que no se encuentre caído.
 void limpiar_nodos_caidos();
 
-//Inserta el nodo en la tablaNodos (si es que no existia)
-// SI existia antes, actualizamos timestamp.
+// Inserta el nuevo nodo en TablaNodos
+// Si el nodo ya existia, actualiza su timestamp.
 void insertar_en_tablaNodos(const char * buffer, const char *ip_recibida);
 
-//Envia la lista de nodos a erlang (NODES ip:puerto:recursos;ip..)
+//Envia la lista de nodos activos a Erlang (NODES ip:puerto:recursos;ip...)
 void enviar_lista_nodos(int fd_erlang);
 
-// Busca el puerto de una IP en tablaNodos
+// Busca el puerto asociado a una IP en TablaNodos
 // retorna -1 si no lo encuentra.
 int buscar_puerto_por_IP(const char * ip);
 
 //ANCHOR -  Solicitud Respuesta Recursos 
 
-//Busca un hueco libre para guardar los datos relacionados.
-//Devuelve el indice si tiene exito, -1 si no (estaba lleno).
+//Busca un hueco libre para guardar los datos relacionados a la solicitud pendiente (RESERVE/RELEASE).
+//Devuelve el índice si tiene éxito ó -1 si la capacidad está llena.
 int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,char* recurso_name,int amount, char* ip, int puerto, int es_release);
 
 //ANCHOR - MANEJO TABLA DE JOB ACTIVOS 
 
 //Libera el job de la tabla de jobs activos, si es que lo encuentra.
-//Avisa a los nodos remotos de la liberaciòn.
+//Avisa a los nodos remotos de la liberación abriendo conexiones a éstos para enviarles RELEASE.
+// Elimina el job de TablaJobActivos
 void liberar_job(int job_id,int epoll_fd);
 
 //Retorna el estado del job_id 
@@ -227,6 +248,7 @@ void liberar_job(int job_id,int epoll_fd);
 int conocer_estado_job(int job_id);
 
 // Registra un nuevo recurso solicitado para un Job en la tabla
+// Si ya estaba registrado, incrementa la capacidad registrada del mismo.
 void registrar_recurso_job(int job_id, const char* ip, int puerto, const char* recurso_name, int amount);
 
 #endif
