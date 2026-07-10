@@ -124,7 +124,7 @@ DENIED
 El agente cuenta con un sistema de auto-limpieza para garantizar la estabilidad del clúster:
 * **Nodos caídos:** Si un nodo deja de enviar `ANNOUNCE`, tras 15 segundos se considerará caído y se eliminará de la `TablaNodos`, dejando de estar disponibles para futuras reservas.
 * **Caídas de red:** Si un cliente TCP se desconecta inesperadamente, los recursos que se le habían asignado se recuperan de inmediato.
-* **Time-Outs:** Las reservas a otros nodos que queden trabadas y no se completen en 10 segundos son abortadas automáticamente, enviando al planificador de Erlang : `JOB_TIMEOUT`.
+* **Time-Outs:** Las reservas a otros nodos que queden trabadas y no se completen en 120 segundos (2 minutos) son abortadas automáticamente, enviando al planificador de Erlang : `JOB_TIMEOUT`.
 
 
 # Autora

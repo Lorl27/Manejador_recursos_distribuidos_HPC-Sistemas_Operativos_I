@@ -30,7 +30,7 @@
 
 #define INTERVALO_SEG 3 // Frecuencia del envío de ANNOUNCE por Broadcast.
 #define TIEMPO_CAIDO 15
-#define TIMEOUT_JOB_SEG 10  //Tiempo máximo de espera para eliminar reservas inconclusas.
+#define TIMEOUT_JOB_SEG 120  //Tiempo máximo de espera para eliminar reservas inconclusas.
 
 #define BROADCAST_IP "255.255.255.255"
 #define LOCAL_IP "127.0.0.1" 
@@ -100,6 +100,7 @@ typedef struct _RecursoConcedido {
     int puerto;
     char recurso_name[16];
     int amount;
+    int fd_remoto; //Para mantener viva la conexión hasta recibir RELEASE
 } RecursoConcedido;
 
 typedef enum _TablaJobActivoEstado{
@@ -227,14 +228,14 @@ void insertar_en_tablaNodos(const char * buffer, const char *ip_recibida);
 void enviar_lista_nodos(int fd_erlang);
 
 // Busca el puerto asociado a una IP en TablaNodos
+// Para mayor seguiridad: si hay varias instancias en una misma IP, verifica cuál de ellas anunció tener el recurso solicitado.
 // retorna -1 si no lo encuentra.
-int buscar_puerto_por_IP(const char * ip);
-
+int buscar_puerto_por_IP_y_recurso(const char * ip, const char * recurso);
 //ANCHOR -  Solicitud Respuesta Recursos 
 
 //Busca un hueco libre para guardar los datos relacionados a la solicitud pendiente (RESERVE/RELEASE).
 //Devuelve el índice si tiene éxito ó -1 si la capacidad está llena.
-int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,char* recurso_name,int amount, char* ip, int puerto, int es_release);
+int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,const char* recurso_name,int amount, const char* ip, int puerto, int es_release);
 
 //ANCHOR - MANEJO TABLA DE JOB ACTIVOS 
 
@@ -249,6 +250,7 @@ int conocer_estado_job(int job_id);
 
 // Registra un nuevo recurso solicitado para un Job en la tabla
 // Si ya estaba registrado, incrementa la capacidad registrada del mismo.
-void registrar_recurso_job(int job_id, const char* ip, int puerto, const char* recurso_name, int amount);
+// Si no se pudo registrar retorna 0. Si pudo hacerlo: retorna 1.
+int registrar_recurso_job(int job_id, const char* ip, int puerto, const char* recurso_name, int amount, int fd_remoto);
 
 #endif

@@ -3,7 +3,7 @@ TARGET = agente_recursos
 
 # Compilador y flags
 CC = gcc
-CFLAGS = -Wall -Wextra -g
+CFLAGS = -Wall -Wextra -Werror -g
 
 # Archivos que conforman el ejecutable
 OBJ = main.o resource_manager_agent.o cola.o
