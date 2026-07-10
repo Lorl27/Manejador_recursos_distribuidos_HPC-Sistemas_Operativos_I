@@ -17,6 +17,32 @@ Para cumplir con los requisitos de alto rendimiento y evitar el bloqueo de los a
 
 Para garantizar la integridad transaccional, el agente mantiene un estado interno riguroso (`TablaJobActivos`) que contabiliza los recursos esperados, los concedidos y los denegados, facilitando operaciones atómicas distribuidas.
 
+### Diagrama de Secuencia de Comunicación
+
+```mermaid
+sequenceDiagram
+    participant ErlangA as Erlang (Nodo A)
+    participant C_A as Agente C (Nodo A)
+    participant C_B as Agente C (Nodo B)
+
+    Note over C_A,C_B: Capa UDP: Descubrimiento Continuo
+    C_A-->>C_B: UDP Broadcast: ANNOUNCE 8001 cpu:2 mem:8
+    C_B-->>C_A: UDP Broadcast: ANNOUNCE 8002 cpu:2 gpu:1
+    
+    Note over ErlangA,C_B: Capa TCP: Solicitud de Recursos (Camino Ideal)
+    ErlangA->>C_A: TCP Local: JOB_REQUEST 1001 @192...:gpu:1
+    C_A->>C_A: Verifica TablaNodos
+    C_A->>C_B: TCP Público: Connect() & RESERVE 1001 gpu 1
+    C_B->>C_B: Verifica Stock / Encola si es necesario
+    C_B->>C_A: TCP Público: GRANTED 1001
+    C_A->>ErlangA: TCP Local: JOB_GRANTED 1001
+    
+    Note over ErlangA,C_B: Liberación de Recursos
+    ErlangA->>C_A: TCP Local: JOB_RELEASE 1001
+    C_A->>C_B: TCP Público: RELEASE 1001 gpu 1
+    C_B->>C_B: Repone recurso / Asigna a cola FIFO
+```
+
 ### Problemas encontrados y soluciones
 
 Durante el desarrollo y las pruebas de verificación, nos enfrentamos a desafíos propios de los sistemas distribuidos:
@@ -59,6 +85,8 @@ Durante el desarrollo y las pruebas de verificación, nos enfrentamos a desafío
     - *Solución:* Cada recurso mantiene una tabla de asignaciones asociada al descriptor de socket del cliente. Cuando `epoll` detecta la desconexión o ruptura del socket, el sistema recorre todas las asignaciones, recupera automáticamente los recursos al stock disponible y elimina las solicitudes pendientes pertenecientes a dicho cliente.
   
 ### Estrategia contra el Deadlock
+Nuestra implementación resuelve automáticamente el interbloqueo mediante timeout y rollback distribuido.
+
 Para evitar la formación de interbloqueos distribuidos, nuestra arquitectura ataca directamente la condición de **Retención y Espera** (Hold and Wait) implementando una estrategia de Prevención mediante **Rollback Automático**.
 
 *Justificación:* En un entorno sin un coordinador central de bloqueos, si un Job requiere recursos de múltiples nodos, podría obtener una parte de los recursos y permanecer esperando indefinidamente por el resto, mientras otros Jobs hacen lo mismo, generando una espera circular. Nuestra estrategia obliga a que la reserva sea "todo o nada". Si un solo componente falla o es denegado, el sistema retrocede (rollback) y libera inmediatamente lo retenido parcial, rompiendo cualquier posible espera circular.
@@ -74,30 +102,93 @@ Para evitar la formación de interbloqueos distribuidos, nuestra arquitectura at
 6. **Rollback:** El Nodo A automáticamente interviene sin que Erlang se lo pida, y envía un `RELEASE 2000 cpu 1` al Nodo B para devolver el `CPU` que le habían dado en el paso 3.
 7. El Nodo A cierra la transacción informando a Erlang el mensaje `JOB_DENIED 2000`. Ningún recurso queda retenido.
 
-### Diagrama de Secuencia de Comunicación
+#### Escenario de deadlock distribuido
+(Para una demostración más rápida bajar TIMEOUT_JOB_SEG a 15)
+
+**Escenario:**
+Nodo A: 2 CPUs, 8 GB RAM, 0 GPU.
+Nodo B: 2 CPUs, 4 GB RAM, 1 GPU.
+
+Job1 (desde A): necesita 2 CPUs de A y 1 GPU de B.
+Job2 (desde B): necesita 1 GPU de B y 2 CPUs de A.
+
+**1. El Inicio:**
+I. El Nodo A pide sus 2 CPUs y la GPU del Nodo B. Se auto-concede sus 2 CPUs y manda el TCP al Nodo B por la GPU.
+II. El Nodo B pide su GPU y 2 CPUs del Nodo A. Se auto-concede su GPU y manda el TCP al Nodo A por los CPUs.
+
+**2. El Bloqueo (Deadlock):**
+I. El Nodo A recibe la petición de B, pero como ya le dio sus CPUs al Job 1, encola al Job 2 en su Cola FIFO.
+II. El Nodo B recibe la petición de A, pero como ya le dio su GPU al Job 2, encola al Job 1 en su Cola FIFO.
+
+Ambos quedarán esperando.
+
+**3. La Resolución:**
+Como ambos Jobs permanecen esperando, comienza a correr el temporizador asociado a la transacción. Cuando se alcanza `TIMEOUT_JOB_SEG`, uno de los nodos (supongamos el Nodo A) aborta automáticamente el Job.
+
+El Nodo A considera fallida la transacción y ejecuta automáticamente el rollback en 2 etapas:
+
+**Fase 1 (Limpieza de la Cola):** El Nodo A cierra el socket de la petición de GPU que quedó trabada. Al instante, el epoll del Nodo B detecta que A se desconectó y ejecuta `limpiar_recursos_por_desconexion()` y `purgar_solicitudes_por_fd()`, eliminando de su cola de espera cualquier solicitud perteneciente al Job 1
+
+**Fase 2 (Liberación de recursos retenidos):** El Nodo A aborta el Job 1 y ejecuta `liberar_job()`.  Como el Job 1 había conseguido previamente la GPU del Nodo B, el Nodo A envía automáticamente: `RELEASE Job1 gpu 1` al Nodo B.
+Al mismo tiempo, el Nodo A libera localmente las 2 CPUs que estaban reservadas para el Job 1 mediante la lógica de `gestionar_recursos_locales()`.
+
+De esta manera, tanto la GPU del Nodo B como las CPUs del Nodo A vuelven a quedar disponibles.
+
+**4. El Desbloqueo (Fin del Deadlock):**
+Al liberarse las 2 CPUs del Nodo A, la función `gestionar_recursos_locales` revisa la cola FIFO y se detecta que en la primera posición se encuntra el Job 2 del Nodo B que estaba esperando exactamente esos recursos. Se los concede automáticamente y le manda `GRANTED job2` al Nodo B.
+
+Por otro lado, cuando el Nodo B recibe `RELEASE Job1 gpu 1` también libera su GPU y elimina de su cola FIFO la solicitud correspondiente al Job 1, ya que el Nodo A había cerrado la conexión al producirse el timeout.
+
+**5. Resultado final:**
+El Job 2 del Nodo B obtiene todos sus recursos solicitados y finaliza con éxito (`JOB_GRANTED Job2`). El Job 1 del Nodo A aborta de forma segura , se liberan todos los recursos que hubiera obtenido parcialmente, y envia `JOB_TIMEOUT Job1` a Erlang, permitiendo que el planificador intente de nuevo más tarde.
+
+**Diagrama del escenario:**
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant ErlangA as Erlang (Nodo A)
     participant C_A as Agente C (Nodo A)
     participant C_B as Agente C (Nodo B)
+    participant ErlangB as Erlang (Nodo B)
 
-    Note over C_A,C_B: Capa UDP: Descubrimiento Continuo
-    C_A-->>C_B: UDP Broadcast: ANNOUNCE 8001 cpu:2 mem:8
-    C_B-->>C_A: UDP Broadcast: ANNOUNCE 8002 cpu:2 gpu:1
+    Note over C_A, C_B: Estado Inicial: Nodo A tiene CPU:2 | Nodo B tiene GPU:1
+
+    %% 1. El Inicio (Solicitudes cruzadas)
+    ErlangA->>C_A: TCP Local: JOB_REQUEST 1 (Requiere CPU de A, GPU de B)
+    ErlangB->>C_B: TCP Local: JOB_REQUEST 2 (Requiere GPU de B, CPU de A)
+
+    Note over C_A: Se auto-concede CPU local a Job 1
+    C_A->>C_B: TCP Público: RESERVE 1 gpu 1
     
-    Note over ErlangA,C_B: Capa TCP: Solicitud de Recursos (Camino Ideal)
-    ErlangA->>C_A: TCP Local: JOB_REQUEST 1001 @192...:gpu:1
-    C_A->>C_A: Verifica TablaNodos
-    C_A->>C_B: TCP Público: Connect() & RESERVE 1001 gpu 1
-    C_B->>C_B: Verifica Stock / Encola si es necesario
-    C_B->>C_A: TCP Público: GRANTED 1001
-    C_A->>ErlangA: TCP Local: JOB_GRANTED 1001
+    Note over C_B: Se auto-concede GPU local a Job 2
+    C_B->>C_A: TCP Público: RESERVE 2 cpu 2
+
+    %% 2. El Bloqueo (Deadlock)
+    Note over C_B: Sin stock de GPU.<br/>Encola solicitud del Job 1.
+    Note over C_A: Sin stock de CPU.<br/>Encola solicitud del Job 2.
     
-    Note over ErlangA,C_B: Liberación de Recursos
-    ErlangA->>C_A: TCP Local: JOB_RELEASE 1001
-    C_A->>C_B: TCP Público: RELEASE 1001 gpu 1
-    C_B->>C_B: Repone recurso / Asigna a cola FIFO
+    Note over C_A, C_B:  DEADLOCK DISTRIBUIDO <br/>Ambos agentes quedan reteniendo y esperando
+
+    %% 3. La Resolución (Timeout y Rollback)
+    Note over C_A:  Alcanza TIMEOUT_JOB_SEG<br/>Se dispara el aborto del Job 1
+    
+    %% Fase 1
+    C_A--xC_B: Cierra conexión TCP (Rompe la espera por GPU)
+    Note over C_B: epoll detecta desconexión del fd.<br/>Ejecuta purgar_solicitudes_por_fd().<br/>Borra al Job 1 de la cola.
+    
+    %% Fase 2
+    Note over C_A: liberar_job():<br/>Devuelve el CPU local retenido al stock.
+
+    %% 4. El Desbloqueo
+    C_A->>ErlangA: TCP Local: JOB_TIMEOUT 1 (Aborta seguro)
+
+    Note over C_A: gestionar_recursos_locales() revisa cola:<br/>Asigna el CPU recién liberado al Job 2.
+    C_A->>C_B: TCP Público: GRANTED 2
+    
+    %% 5. Resultado Final
+    Note over C_B: Job 2 recolecta su último recurso faltante.
+    C_B->>ErlangB: TCP Local: JOB_GRANTED 2 (Finaliza con éxito)
 ```
 
 ### Roles y contribuciones
