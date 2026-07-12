@@ -1099,7 +1099,21 @@ void gestionar_recursos_locales(RecursosLocales * recurso, const char * comando,
 
             //si tenemos suficiente disponible para el job...:
             if(recurso->cantidadDisponible>=primero->amount){
+
+                if(recurso->cantidad_asignaciones >= MAX_PENDING){
+                    printf("[COLA-ERROR] Tabla de asignaciones llena al intentar desencolar.\n");
+                    exigencia_mayor=1;
+                    continue; 
+                }
+
                 recurso->cantidadDisponible-=primero->amount;
+
+                // Registrar la asignación para que la limpieza automática lo encuentre
+                int pos = recurso->cantidad_asignaciones;
+                recurso->asignaciones[pos].fd_cliente = primero->fd_origen;
+                recurso->asignaciones[pos].amount = primero->amount;
+                recurso->asignaciones[pos].job_id = primero->job_id;
+                recurso->cantidad_asignaciones++;
 
                 snprintf(respuesta, sizeof(respuesta), "GRANTED %d\n", primero->job_id);
                 ssize_t enviados =send(primero->fd_origen, respuesta, strlen(respuesta), 0);

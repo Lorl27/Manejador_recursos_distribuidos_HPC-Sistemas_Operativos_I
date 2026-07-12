@@ -8,6 +8,8 @@ Implementa una arquitectura de **doble socket UDP**: utiliza un socket de **rece
 2. **TCP PÚBLICO:** Atiende las peticiones de otros agentes (`RESERVE / RELEASE`) de forma no bloqueante, con epoll.
 3. **TCP LOCAL (ERLANG):** Interfaz TCP exclusiva para peticiones locales del planificador de Erlang (`JOB_REQUEST / JOB_RELEASE / JOB_STATUS / GET NODES`) que permiten coordinar la comunicación.
 
+Todas las conexiones TCP utilizadas entre agentes permanecen abiertas mientras el recurso permanezca asignado al job correspondiente. Esto permite que la orden `RELEASE` sea enviada posteriormente utilizando la misma conexión, evitando pérdidas de estado en las colas FIFO del nodo remoto.
+
 ## Requisitos previos
 ```console
 sudo apt update
@@ -50,7 +52,7 @@ Requiere:
   ./Scripts/test_deadlock.sh
  ```
 
-Este script orquesta de forma autónoma la creación de dos nodos, aguarda la sincronización de la topología vía UDP Broadcast, y simula al planificador Erlang inyectando peticiones cruzadas (Hold and Wait). Al ejecutarlo, se puede observar en las consolas resultantes **dos casos** dependiento del timing exacto:
+Este script orquesta de forma autónoma la creación de dos nodos, aguarda la sincronización de la topología vía UDP Broadcast, y simula al planificador Erlang inyectando peticiones cruzadas (Hold and Wait). Al ejecutarlo, se puede observar en las consolas resultantes **dos casos** dependiendo del timing exacto:
    **A.** El sistema entra en interbloqueo y resuelve la colisión automáticamente mediante el mecanismo de Timeout y Rollback implementado en C.
    **B.** Un Job resultó ser más rápido que el otro , resultando en que uno obtiene todo de inmediato y el otro: se encola en la cola FIFO y éste mismo se resolverá apenas se libere el primer Job.
 
@@ -75,25 +77,25 @@ Se imprimirá por pantalla el mensaje:`[INFO-ARRANQUE] Enviando primer anuncio..
    Tener en cuenta la IP listada para el siguiente paso. 
    2. `JOB_REQUEST <job_id> <@IP>:<recurso>:<cantidad_recurso>`: Solicita `<recurso>` al nodo con IP `<@IP> `.
    Por ejemplo: `JOB_REQUEST 1001 @127.0.0.3:gpu:1` solicita `gpu` al Nodo B.
-   Este comando provocará que el Nodo A busque la IP en  `TablaNodos` y abra una conexión TCP con el Nodo remoto. Luego le enviará `RESERVE 1001 gpu 1` al Nodo B y este verificará la `<cantidad_recurso>` (En este caso: `1`).
+   Este comando provocará que el Nodo A busque la IP en  `TablaNodos` y establezca una conexión TCP con el Nodo remoto. Luego le enviará `RESERVE 1001 gpu 1` al Nodo B y este verificará la `<cantidad_recurso>` (En este caso: `1`).
          - Si tiene capacidad enviará `GRANTED 1001`. El Nodo A recibe la respuesta y tras actualizar `TablaJobActivos`, le notificará a Erlang `JOB_GRANTED 1001`.
          - Si no tiene capacidad, la solicitud se encolará (ver sección de Cola FIFO) hasta que exista disponibilidad.
          -  En caso de que la operación deba abortarse enviará `DENIED 1001` y el Nodo A realizará el rollback automático liberando los recursos obtenidos parcialmente y, finalmente, le notificará a Erlang  `JOB_DENIED 1001`.
        - Si no encuentra la IP: el Nodo A realizará el rollback liberando los recursos obtenidos parcialmente y, finalmente, le notificará a Erlang  `JOB_DENIED 1001`, indicando que el nodo solicitado no está registrado en `TablaNodos`. 
      1. `JOB_RELEASE <job_id>`: Libera todos los recursos asociados a `<job_id>`
-    Por ejemplo `JOB_RELEASE 1001` provocará que el Nodo A consulte en `TablaJobActivos` los nodos cuyos recursos se le hayan asignado al job, para luego abrir una conexión TCP con cada uno de ellos e ir enviando `RELEASE <job_id> <recurso> <cantidad_recurso>` ( En este caso`RELEASE 1001 gpu 1`). 
+    Por ejemplo `JOB_RELEASE 1001` provocará que el Nodo A consulte en `TablaJobActivos` los nodos cuyos recursos se le hayan asignado al job, para luego utilizar la conexión TCP persistente asociada a cada recurso e ir enviando `RELEASE <job_id> <recurso> <cantidad_recurso>` ( En este caso`RELEASE 1001 gpu 1`). 
     Por último, limpia el registro en `TablaJobActivos` y cierra las conexiones pendientes.
     (Nota: Si se intenta liberar un Job inexistente, el agente registrará una advertencia interna sin afectar el sistema).
      2. `JOB_STATUS <job_id>`: Devuelve el estado del job.
     Por ejemplo: `JOB_STATUS 1001` provocará que el Nodo A revise `TablaJobActivos` y:
           - Si existe: envie a Erlang `JOB_STATUS <estado>`
-          - Si no existe: tire la advertencia `[ERLANG-C WARNING] NO se encontro estado para el job <job_id>`
+          - Si no existe: tire la advertencia `[ERLANG-C WARNING] NO se encontró estado para el job <job_id>`
 
 ## Funcionamiento de la Cola FIFO de solicitudes
 La implementación garantiza una gestión justa de los recursos cuando la demanda supera el stock actual de un nodo.
 
-*  **Encolamiento automático:** Si Erlang solicita un recurso mediante `JOB_REQUEST 1002 @127.0.2:gpu:1` y el Nodo B no tiene `gpu` disponible en ese momento, éste agregará la petición a la cola de espera e informará con : `[INFO-COLA] Sin stock de gpu. Solicitud 1002 agregada a la cola.`.
-*  **Liberación y reasignación:** Cuando el Job anterior termine y Erlang envie `JOB_RELEASE 1001`, provocará que el Nodo A busque el `job` en `TablaJobActivos` para encontrar a qué Nodo se le pidió el recurso `gpu`. Luego, le enviará `RELEASE 1001 gpu 1` a ese mismo Nodo. Entonces, el Nodo B liberará la `gpu`. Luego, éste revisará su cola FIFO, detectará que el primer elemento de la cola pertenece al `job 1002` (estaba esperando), le asignará el recurso y enviará `GRANTED 1002`. Finalmente, en la terminal de Erlang, recibimos `JOB_GRANTED 1002`.
+*  **Encolamiento automático:** Si Erlang solicita un recurso mediante `JOB_REQUEST 1002 @127.0.0.2:gpu:1` y el Nodo B no tiene `gpu` disponible en ese momento, éste agregará la petición a la cola de espera e informará con : `[INFO-COLA] Sin stock de gpu. Solicitud 1002 agregada a la cola.`.
+*  **Liberación y reasignación:** Cuando el Job anterior termine y Erlang envíe `JOB_RELEASE 1001`, provocará que el Nodo A busque el `job` en `TablaJobActivos` para encontrar a qué Nodo se le pidió el recurso `gpu`. Luego, le enviará `RELEASE 1001 gpu 1` a ese mismo Nodo. Entonces, el Nodo B liberará la `gpu`. Luego, éste revisará su cola FIFO, detectará que el primer elemento de la cola pertenece al `job 1002` (estaba esperando), le asignará el recurso y enviará `GRANTED 1002`. Finalmente, en la terminal de Erlang, recibimos `JOB_GRANTED 1002`.
 *  **Manejo de transacciones parciales:** Si un `JOB_REQUEST` incluye múltiples recursos (Por ejemplo: `JOB_REQUEST 1003 @192.168.1.2:cpu:2 @192.168.1.3:gpu:1`) y uno de ellos falla o es denegado (`DENIED`): el Nodo A aplicará un rollback automático, enviando `RELEASE` a los recursos que había concedido parcialmente. Esto evita que se produzcan `DEADLOCKS` por retención de recursos bloqueados.
 
 Esto permite que un mismo job solicite recursos distribuidos en distintos nodos garantizando consistencia: el job obtiene todos los recursos solicitados o ninguno de ellos, manteniendo además el orden FIFO para las solicitudes pendientes.
@@ -151,7 +153,7 @@ DENIED
 El agente cuenta con un sistema de auto-limpieza para garantizar la estabilidad del clúster:
 * **Nodos caídos:** Si un nodo deja de enviar `ANNOUNCE`, tras 15 segundos se considerará caído y se eliminará de la `TablaNodos`, dejando de estar disponibles para futuras reservas.
 * **Caídas de red:** Si un cliente TCP se desconecta inesperadamente, los recursos que se le habían asignado se recuperan de inmediato.
-* **Time-Outs:** Las reservas a otros nodos que queden trabadas y no se completen en 120 segundos (2 minutos) son abortadas automáticamente, enviando al planificador de Erlang : `JOB_TIMEOUT`.
+* **Time-Outs:** Las reservas a otros nodos que queden trabadas ó jobs en estado de solicitud (1) que no logren completarse en 120 segundos (2 minutos) son abortadas automáticamente, enviando al planificador de Erlang : `JOB_TIMEOUT`.
 
 
 # Autora
