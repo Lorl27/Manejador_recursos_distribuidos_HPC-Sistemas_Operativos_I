@@ -9,7 +9,9 @@ El presente trabajo consiste en el desarrollo de un middleware distribuido para 
 El middleware fue diseñado utilizando una arquitectura distribuida asincrónica de tres capas.
 Para cumplir con los requisitos de alto rendimiento y evitar el bloqueo de los agentes, se optó por un modelo orientado a eventos utilizando `epoll` en C.
 
-* **Descubrimiento Dinámico:** Se implementó mediante sockets UDP interactuando con la red en modo Broadcast (`255.255.255.255`). Un temporizador (`timerfd`) no bloqueante dispara envíos periódicos (`ANNOUNCE`) cada 3 segundos, permitiendo mantener una tabla de enrutamiento local actualizada con un tiempo de caducidad de 15 segundos.
+* **Descubrimiento Dinámico:** Se implementó mediante sockets UDP interactuando con la red en modo Broadcast (`255.255.255.255`). Debido a que el mensaje `ANNOUNCE` no lleva la IP del emisor se implementó una arquitectura de **doble socket UDP**: un socket de **recepción**, bindeado a `0.0.0.0` para escuchar anuncios de cualquier origen, y un socket de **envío** dedicado, bindeado explícitamente a la IP propia de cada nodo, que garantiza que `recvfrom()` del lado receptor reporte la IP real del emisor.
+Un temporizador (`timerfd`) no bloqueante dispara envíos periódicos (`ANNOUNCE`) cada 3 segundos, permitiendo mantener una tabla de enrutamiento local actualizada con un tiempo de caducidad de 15 segundos.
+
 
 * **Comunicación entre Agentes:** Se resolvió utilizando sockets TCP públicos configurados estrictamente con `O_NONBLOCK`. La gestión de concurrencia a través de `epoll` permite escalar el servidor para manejar múltiples peticiones simultáneas (`RESERVE`, `GRANTED`, `DENIED`, `RELEASE`) sin detener el hilo principal de ejecución.
 
@@ -47,11 +49,13 @@ sequenceDiagram
 
 Durante el desarrollo y las pruebas de verificación, nos enfrentamos a desafíos propios de los sistemas distribuidos:
 
-* **Problema 1:** El falso "Deadlock" por IPs compartidas en pruebas locales.
+* **Problema 1:** Identidad ambigua entre nodos en pruebas locales.
 
-    - *Descripción:* Al testear múltiples nodos en la misma máquina física, la función de búsqueda de nodos se conectaba al propio nodo local en un bucle infinito al compartir la IP LAN, abortando la transacción al no encontrar el recurso esperado.
+    - *Descripción:* Al testear múltiples nodos en la misma máquina física, cada uno recibía su propio `ANNOUNCE` y se autoregistraba en su propia tabla como si fuera otro nodo. Además, como el protocolo no tiene forma de pedir explícitamente *"mis propios recursos"*, cuando dos nodos compartían la misma IP física la resolución de a quién conectarse quedaba ambigua o mal enrutada.
 
-    - *Solución:* Se optimizó la función de enrutamiento (`buscar_puerto_por_IP_y_recurso`) introduciendo una capa de validación extra mediante `strstr`. El nodo ahora verifica no solo la IP, sino que el puerto destino efectivamente haya anunciado poseer el recurso solicitado.
+    - *Solución:*  Se agregaron las variables `mi_ip_global` y `mi_puerto_global`, fijados una sola vez al arrancar, usados en `insertar_en_tablaNodos` para descartar el propio anuncio antes de insertarlo.
+    Además, se extendió `buscar_puerto_por_IP_y_recurso` para que, cuando el `JOB_REQUEST` apunta a la propia IP, resuelva directo contra el propio puerto público en vez de buscar en la tabla de vecinos.
+    Como la IP de cada nodo debe extraerse de `recvfrom()`, para que dos instancias en una misma máquina tengan identidades realmente distintas hace falta que sus paquetes de broadcast salgan con IP de origen distinta, para eso se agregó un socket **UDP exclusivo para el envío**, bindeado a la IP propia de cada nodo, separado del **socket de recepción** (que sigue en `0.0.0.0`).
 
 * **Problema 2:** Limpieza prematura y pérdida de la Cola FIFO.
 
@@ -74,9 +78,10 @@ Durante el desarrollo y las pruebas de verificación, nos enfrentamos a desafío
 
 * **Problema 5:** Llegada tardía de respuestas (Race Condition)
 
-    - *Descripción:* Un Job podía expirar por timeout y ser eliminado de la tabla local mientras un nodo remoto todavía estaba procesando la reserva. Si posteriormente llegaba `GRANTED` para ese JOb inexistente, el recurso quedaba reservado indefinidamente en el nodo remoto *(Fuga de recursos distribuidos)*.
+    - *Descripción:* Un Job podía expirar por timeout y ser eliminado de la tabla local mientras un nodo remoto todavía estaba procesando la reserva. Si posteriormente llegaba `GRANTED` para ese Job inexistente, el recurso quedaba reservado indefinidamente en el nodo remoto *(Fuga de recursos distribuidos)*.
 
     - *Solución:* Se implementó una lógica de compensación.Cuando llega un `GRANTED` para un Job inexistente, el agente inicia automáticamente una conexión de compensación y envía `RELEASE` al nodo remoto. Recuperando inmediatamente los recursos concedidos fuera de tiempo.
+    Adicionalmente, se reforzó `liberar_job()` para que cierre de forma inmediata cualquier solicitud pendiente asociada al job en el momento de la cancelación, en vez de depender únicamente de la compensación descripta arriba.
   
 * **Problema 6:** Recuperación tras desconexiones inesperadas
 
@@ -85,6 +90,7 @@ Durante el desarrollo y las pruebas de verificación, nos enfrentamos a desafío
     - *Solución:* Cada recurso mantiene una tabla de asignaciones asociada al descriptor de socket del cliente. Cuando `epoll` detecta la desconexión o ruptura del socket, el sistema recorre todas las asignaciones, recupera automáticamente los recursos al stock disponible y elimina las solicitudes pendientes pertenecientes a dicho cliente.
   
 ### Estrategia contra el Deadlock
+
 Nuestra implementación resuelve automáticamente el interbloqueo mediante timeout y rollback distribuido.
 
 Para evitar la formación de interbloqueos distribuidos, nuestra arquitectura ataca directamente la condición de **Retención y Espera** (Hold and Wait) implementando una estrategia de Prevención mediante **Rollback Automático**.
@@ -103,7 +109,9 @@ Para evitar la formación de interbloqueos distribuidos, nuestra arquitectura at
 7. El Nodo A cierra la transacción informando a Erlang el mensaje `JOB_DENIED 2000`. Ningún recurso queda retenido.
 
 #### Escenario de deadlock distribuido
-(Para una demostración más rápida bajar TIMEOUT_JOB_SEG a 15)
+(Para una demostración más rápida bajar `TIMEOUT_JOB_SEG` a `15`)
+
+> **Nota:** Lo que sigue describe el caso en que las dos solicitudes cruzadas efectivamente colisionan (**Caso A**), es el escenario que demuestra en acción la estrategia anti-deadlock. Como el timing exacto entre los dos `JOB_REQUEST` puede variar entre corridas, también es posible que un job complete su transacción entera antes de que el otro llegue a competir por el mismo recurso (**Caso B**): en ese caso no llega a formarse un interbloqueo real, el segundo job simplemente queda encolado por FIFO y se resuelve apenas el primero libera, sin necesitar timeout ni rollback. Los dos resultados son correctos; el Caso A es el que ilustra puntualmente el mecanismo de prevención descripto a continuación.
 
 **Escenario:**
 Nodo A: 2 CPUs, 8 GB RAM, 0 GPU.
@@ -113,8 +121,8 @@ Job1 (desde A): necesita 2 CPUs de A y 1 GPU de B.
 Job2 (desde B): necesita 1 GPU de B y 2 CPUs de A.
 
 **1. El Inicio:**
-I. El Nodo A pide sus 2 CPUs y la GPU del Nodo B. Se auto-concede sus 2 CPUs y manda el TCP al Nodo B por la GPU.
-II. El Nodo B pide su GPU y 2 CPUs del Nodo A. Se auto-concede su GPU y manda el TCP al Nodo A por los CPUs.
+I. El Nodo A pide sus 2 CPUs y la GPU del Nodo B. Para los recursos propios, el sistema utiliza `TCP Loopback`: el agente abre una conexión TCP real contra su propia IP pública, procesando la "auto-concesión" a través del epoll con la misma máquina de estados que utiliza para nodos externos. En paralelo, manda la conexión TCP al Nodo B solicitando la GPU.
+II. El Nodo B procesa la petición de su GPU y 2 CPUs del Nodo A. Utilizando el mismo mecanismo de Loopback, se auto-concede su GPU estableciendo una conexión TCP consigo mismo, y envía simultáneamente la petición TCP al Nodo A por los CPUs.
 
 **2. El Bloqueo (Deadlock):**
 I. El Nodo A recibe la petición de B, pero como ya le dio sus CPUs al Job 1, encola al Job 2 en su Cola FIFO.
@@ -127,20 +135,15 @@ Como ambos Jobs permanecen esperando, comienza a correr el temporizador asociado
 
 El Nodo A considera fallida la transacción y ejecuta automáticamente el rollback en 2 etapas:
 
-**Fase 1 (Limpieza de la Cola):** El Nodo A cierra el socket de la petición de GPU que quedó trabada. Al instante, el epoll del Nodo B detecta que A se desconectó y ejecuta `limpiar_recursos_por_desconexion()` y `purgar_solicitudes_por_fd()`, eliminando de su cola de espera cualquier solicitud perteneciente al Job 1
+**Fase 1 (Limpieza de la Cola remota):** El Nodo A cierra el socket de la petición de GPU que quedó trabada. Al instante, el epoll del Nodo B detecta que A se desconectó y ejecuta `limpiar_recursos_por_desconexion()` y `purgar_solicitudes_por_fd()`, eliminando de su cola de espera cualquier solicitud perteneciente al Job 1
 
-**Fase 2 (Liberación de recursos retenidos):** El Nodo A aborta el Job 1 y ejecuta `liberar_job()`.  Como el Job 1 había conseguido previamente la GPU del Nodo B, el Nodo A envía automáticamente: `RELEASE Job1 gpu 1` al Nodo B.
-Al mismo tiempo, el Nodo A libera localmente las 2 CPUs que estaban reservadas para el Job 1 mediante la lógica de `gestionar_recursos_locales()`.
-
-De esta manera, tanto la GPU del Nodo B como las CPUs del Nodo A vuelven a quedar disponibles.
+**Fase 2 (Liberación de recursos locales):** El Nodo A aborta el Job 1 y ejecuta `liberar_job()`.  Como la única reserva que el Job 1 había logrado consolidar eran sus propias 2 CPUs (retenidas mediante TCP Loopback), el Nodo A procesa internamente la liberación mediante `gestionar_recursos_locales()`, devolviendo las CPUs al stock disponible. (Nota: No se envía un `RELEASE` al Nodo B porque el Job 1 nunca llegó a obtener la GPU).
 
 **4. El Desbloqueo (Fin del Deadlock):**
-Al liberarse las 2 CPUs del Nodo A, la función `gestionar_recursos_locales` revisa la cola FIFO y se detecta que en la primera posición se encuntra el Job 2 del Nodo B que estaba esperando exactamente esos recursos. Se los concede automáticamente y le manda `GRANTED job2` al Nodo B.
-
-Por otro lado, cuando el Nodo B recibe `RELEASE Job1 gpu 1` también libera su GPU y elimina de su cola FIFO la solicitud correspondiente al Job 1, ya que el Nodo A había cerrado la conexión al producirse el timeout.
+Al liberarse las 2 CPUs del Nodo A, la función `gestionar_recursos_locales` revisa la cola FIFO y detecta que en la primera posición se encuntra el Job 2 del Nodo B, que estaba esperando exactamente esos recursos. Se los concede automáticamente y le manda `GRANTED job2` al Nodo B.
 
 **5. Resultado final:**
-El Job 2 del Nodo B obtiene todos sus recursos solicitados y finaliza con éxito (`JOB_GRANTED Job2`). El Job 1 del Nodo A aborta de forma segura , se liberan todos los recursos que hubiera obtenido parcialmente, y envia `JOB_TIMEOUT Job1` a Erlang, permitiendo que el planificador intente de nuevo más tarde.
+El Job 2 del Nodo B (que ya tenía retenida su propia GPU) recolecta su último recurso faltante y finaliza con éxito, notificando `JOB_GRANTED Job2`. El Job 1 del Nodo A aborta de forma segura , se liberan todos los recursos que hubiera obtenido parcialmente, y envia `JOB_TIMEOUT Job1` a Erlang, permitiendo que el planificador intente de nuevo más tarde.
 
 **Diagrama del escenario:**
 

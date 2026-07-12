@@ -164,15 +164,16 @@ int crear_conexion_cliente(const char * ip_destino, int puerto_destino);
 //ANCHOR -- Eventos principales
 
 // Envia un anuncio y espera 2s para recibir anuncios de otros nodos ya activos.
-void ejecutar_arranque_inicial(int epoll_fd, int sock_udp_broadcast, int puerto_tcp, char * recursos);
+void ejecutar_arranque_inicial(int epoll_fd, int socket_broadcast_recv, int socket_broadcast_send, int puerto_tcp, char * recursos);
 
 /*
 Inicializa el agente de recursos.
  
 Crea:
-   - Un servidor TCP público asociado a la IP del nodo.
-   - Un servidor TCP local asociado a 127.0.0.1.
-   - Un socket UDP para anuncios por broadcast.
+    - Un Socket UDP exlusivo para envios asociado a la IP del nodo.
+    - Un servidor TCP público asociado a la IP del nodo.
+    - Un servidor TCP local asociado a 127.0.0.1.
+    - Un socket UDP para recepción de anuncios por broadcast ((0.0.0.0)).
  
 Ambos servidores TCP escuchan sobre el mismo puerto.
  
@@ -227,7 +228,7 @@ void insertar_en_tablaNodos(const char * buffer, const char *ip_recibida);
 //Envia la lista de nodos activos a Erlang (NODES ip:puerto:recursos;ip...)
 void enviar_lista_nodos(int fd_erlang);
 
-// Busca el puerto asociado a una IP en TablaNodos
+// Busca el puerto asociado a una IP en TablaNodos ó a mi IP Global
 // Para mayor seguiridad: si hay varias instancias en una misma IP, verifica cuál de ellas anunció tener el recurso solicitado.
 // retorna -1 si no lo encuentra.
 int buscar_puerto_por_IP_y_recurso(const char * ip, const char * recurso);
@@ -239,9 +240,13 @@ int guardar_datos_solicitud_respuesta(int fd_remoto,int fd_erlang,int job_id,con
 
 //ANCHOR - MANEJO TABLA DE JOB ACTIVOS 
 
-//Libera el job de la tabla de jobs activos, si es que lo encuentra.
-//Avisa a los nodos remotos de la liberación abriendo conexiones a éstos para enviarles RELEASE.
-// Elimina el job de TablaJobActivos
+/*
+  Libera un job del sistema y limpia todas sus conexiones de red asociadas.
+  Realiza el proceso en 3 fases:
+  1. Limpia y cierra los sockets de solicitudes pendientes para evitar fugas de conexiones.
+  2. Envía el mensaje RELEASE por los sockets ya establecidos de los recursos concedidos, y luego los cierra.
+  3. Elimina el registro del job de la TablaJobActivos.
+ */
 void liberar_job(int job_id,int epoll_fd);
 
 //Retorna el estado del job_id 
